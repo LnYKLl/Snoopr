@@ -98,3 +98,28 @@ fn io_reason_mapping() {
         FailureReason::AccessDenied
     );
 }
+
+#[test]
+fn deletes_tree_with_readonly_directory() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    let rod = d.join("rodir");
+    write_file(&rod.join("f.txt"), 10);
+    let mut perm = std::fs::metadata(&rod).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&rod, perm).unwrap();
+    assert_eq!(delete_permanently(&d), ItemOutcome::Removed);
+    assert!(!d.exists());
+}
+
+#[test]
+fn root_junction_removes_link_only() {
+    let t = tempfile::tempdir().unwrap();
+    let outside = t.path().join("outside");
+    write_file(&outside.join("precious.txt"), 10);
+    let j = t.path().join("j");
+    make_junction(&j, &outside);
+    assert_eq!(delete_permanently(&j), ItemOutcome::Removed);
+    assert!(!j.exists());
+    assert!(outside.join("precious.txt").exists());
+}
