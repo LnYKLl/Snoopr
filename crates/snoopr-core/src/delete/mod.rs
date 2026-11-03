@@ -4,6 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 pub mod permanent;
+pub mod recycle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeleteMode {
