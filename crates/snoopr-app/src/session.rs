@@ -41,8 +41,6 @@ pub fn can_start_delete(busy: bool, basket_len: usize) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subject {
     Basket,
-    // Built by the context menu (next task); remove this expectation then.
-    #[cfg_attr(not(test), expect(dead_code))]
     One(NodeId),
 }
 
@@ -56,6 +54,19 @@ pub fn subject_basket<'a>(tree: &Tree, basket: &'a Basket, subject: Subject) -> 
             Cow::Owned(one)
         }
     }
+}
+
+/// What the session is busy with, for the menus and the activity line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Activity {
+    Idle,
+    /// A scan or a rescan, running or waiting.
+    Scanning,
+    Deleting {
+        done: usize,
+        total: usize,
+    },
+    EmptyingBin,
 }
 
 /// Outcomes of each request of a job, in request order.
@@ -294,6 +305,22 @@ impl Session {
     /// A deletion or the emptying of the Recycle Bin is running.
     pub fn is_deleting(&self) -> bool {
         self.delete.is_some() || self.empty_job.is_some()
+    }
+
+    /// What the session is busy with right now.
+    pub fn activity(&self) -> Activity {
+        if let Some(job) = &self.delete {
+            Activity::Deleting {
+                done: job.progress.done.load(Ordering::Relaxed),
+                total: job.progress.total.load(Ordering::Relaxed),
+            }
+        } else if self.empty_job.is_some() {
+            Activity::EmptyingBin
+        } else if self.is_busy() {
+            Activity::Scanning
+        } else {
+            Activity::Idle
+        }
     }
 
     /// The ids a deletion of `subject` is about: the basket items, or the item itself.
@@ -1248,5 +1275,16 @@ mod tests {
         let dir = PathBuf::from(std::env::var_os("SNOOPR_E2E_DIR").expect("SNOOPR_E2E_DIR"));
         assert_eq!(dir.file_name(), Some("snoopr-test".as_ref()));
         delete_big_and_locked_permanently(&dir);
+    }
+
+    #[test]
+    fn activity_follows_the_jobs() {
+        let mut s = one_fixture().s;
+        assert_eq!(s.activity(), Activity::Idle);
+        let progress = Arc::new(DeleteProgress::default());
+        progress.total.store(2, Ordering::SeqCst);
+        let (_tx, rx) = mpsc::channel();
+        s.delete = Some(DeleteJob { progress, rx });
+        assert_eq!(s.activity(), Activity::Deleting { done: 0, total: 2 });
     }
 }

@@ -7,8 +7,8 @@ use super::model::{
     needs_rebuild,
 };
 use crate::i18n::{
-    Lang, block_message, denied_dirs, format_age, format_percent, format_size, items_count,
-    modified_ago, mostly_line, small_files, type_line, warning_message,
+    Lang, block_message, denied_dirs, format_age, format_percent, format_size, hint_line,
+    items_count, modified_ago, mostly_line, small_files, type_line, warning_message,
 };
 use crate::session::Session;
 use crate::theme::{
@@ -20,7 +20,7 @@ use egui::{
     Color32, CursorIcon, FontId, Painter, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind,
     Ui, pos2, vec2,
 };
-use snoopr_core::actions::verdict;
+use snoopr_core::actions::{PrimaryAction, primary_action, verdict};
 use snoopr_core::age::{AgeFilter, age_months, is_dimmed, now_unix};
 use snoopr_core::layout::{self as core_layout, Item};
 use snoopr_core::rules::{RuleContext, Verdict};
@@ -43,6 +43,10 @@ pub struct TreemapEvents {
     pub clicked: Option<NodeId>,
     pub double_clicked: Option<NodeId>,
     pub clicked_empty: bool,
+    /// Right-clicked block, or the folder shown for an empty spot.
+    pub secondary_clicked: Option<NodeId>,
+    /// The response of the whole treemap area, which anchors the context menu.
+    pub response: egui::Response,
 }
 
 /// The node a block acts on: a small-files group stands for its parent.
@@ -246,7 +250,14 @@ fn note(ui: &mut Ui, glyph: &str, color: Color32, msg: &str) {
     );
 }
 
-fn tooltip(ui: &mut Ui, it: &CachedItem, guard: Option<Verdict>, s: &Session, cx: &PaintCtx) {
+/// What the tooltip needs to know about the hovered block, read under the tree lock.
+struct Hovered {
+    guard: Option<Verdict>,
+    /// The block can go to the basket (`primary_action` is Add or Remove).
+    deletable: bool,
+}
+
+fn tooltip(ui: &mut Ui, it: &CachedItem, hov: &Hovered, s: &Session, cx: &PaintCtx) {
     let (lang, st) = (cx.lang, cx.lang.s());
     ui.set_max_width(300.0);
     ui.spacing_mut().item_spacing.y = 2.0;
@@ -294,14 +305,17 @@ fn tooltip(ui: &mut Ui, it: &CachedItem, guard: Option<Verdict>, s: &Session, cx
     if let Some(l) = kind_line {
         ui.label(small(l).color(TEXT_MUTED));
     }
-    match guard {
+    match hov.guard {
         Some(Verdict::Block(b)) => note(ui, "🔒", LOCK_TEXT, block_message(lang, b)),
         Some(Verdict::Warn(w)) => note(ui, "⚠", WARN_TEXT, warning_message(lang, w)),
         _ => {}
     }
-    if is_dir {
+    // No hint for a small-files group.
+    if matches!(it.placed.item, Item::Node(_))
+        && let Some(hint) = hint_line(lang, is_dir, hov.deletable)
+    {
         ui.add_space(2.0);
-        ui.label(RichText::new(st.double_click).size(10.0).color(TEXT_MUTED));
+        ui.label(RichText::new(hint).size(10.0).color(TEXT_MUTED));
     }
 }
 
@@ -314,20 +328,22 @@ pub fn show(
     rules: &RuleContext,
     lang: Lang,
 ) -> TreemapEvents {
+    let full = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(full, Sense::click());
     let mut ev = TreemapEvents {
         clicked: None,
         double_clicked: None,
         clicked_empty: false,
+        secondary_clicked: None,
+        response: resp.clone(),
     };
-    let full = ui.available_rect_before_wrap();
-    let resp = ui.allocate_rect(full, Sense::click());
     let area = full.shrink(MARGIN);
     let origin = area.min;
     // Floored, so the layout never spills out of `area`.
     let size = (area.width().max(0.0) as u32, area.height().max(0.0) as u32);
     let local = |p: Pos2| (p.x - origin.x, p.y - origin.y);
 
-    let (hovered, guard) = {
+    let (hovered, hov) = {
         let tree = s.tree.read().unwrap_or_else(PoisonError::into_inner);
         let key = LayoutKey {
             generation: tree.generation(),
@@ -350,14 +366,21 @@ pub fn show(
             let (x, y) = local(p);
             hit_test(items, x, y)
         });
-        // Only the hovered block needs its guard rail, for the tooltip.
-        let guard = hovered.and_then(|i| match items[i].placed.item {
-            Item::Node(id) if items[i].kind != NodeKind::Unscanned => {
-                Some(verdict(&tree, rules, id))
-            }
-            _ => None,
+        // Only the hovered block needs its guard rail and its hint, for the tooltip.
+        let hov = hovered.map(|i| match items[i].placed.item {
+            Item::Node(id) if items[i].kind != NodeKind::Unscanned => Hovered {
+                guard: Some(verdict(&tree, rules, id)),
+                deletable: matches!(
+                    primary_action(&tree, &s.basket, rules, id),
+                    PrimaryAction::Add | PrimaryAction::Remove
+                ),
+            },
+            _ => Hovered {
+                guard: None,
+                deletable: false,
+            },
         });
-        (hovered, guard)
+        (hovered, hov)
     };
     let Some(layout) = cache.as_ref() else {
         return ev;
@@ -373,6 +396,13 @@ pub fn show(
             Some(id) => ev.clicked = Some(id),
             None => ev.clicked_empty = true,
         }
+    }
+    if resp.secondary_clicked() {
+        ev.secondary_clicked = Some(
+            resp.interact_pointer_pos()
+                .and_then(pick)
+                .unwrap_or(s.view.root),
+        );
     }
     if resp.double_clicked() {
         ev.double_clicked = resp.interact_pointer_pos().and_then(pick);
@@ -418,7 +448,9 @@ pub fn show(
 
     if let Some(i) = hovered {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        resp.on_hover_ui_at_pointer(|ui| tooltip(ui, &items[i], guard, s, &cx));
+        if let Some(hov) = &hov {
+            resp.on_hover_ui_at_pointer(|ui| tooltip(ui, &items[i], hov, s, &cx));
+        }
     }
     ev
 }

@@ -11,7 +11,7 @@ Snoopr is a free, open-source disk-usage visualizer for Windows. It scans a driv
 - Colours by content type: games, videos and images, archives and installers, virtual disks, cache and temporary files, programs, system, other. A legend sits above the status bar.
 - Sizes are the space actually allocated on disk (NTFS compression and OneDrive online-only files count for what they really use), not logical size.
 - Age filter ("what is no longer used"): files touched more recently than a threshold are greyed out, leaving only deletion candidates in colour. Age is the most recent of modified and created dates.
-- Basket: add items with Del, review them, then delete in one confirmed step.
+- Basket: add items from the top bar or the right-click menu, review them, then delete in one confirmed step.
 - Hover tooltip with size, share of disk, age, type and any warning.
 - A "Not scanned" hatched block shows disk space that could not be read (denied folders, system-reserved space), with an optional "Restart as administrator".
 - French and English interface, following the Windows language.
@@ -44,10 +44,12 @@ snoopr.exe [path]
 
 Without argument, Snoopr shows your drives, and a click starts the scan. With a path, it scans that path directly.
 
+Right-click a block, then "Delete...", to delete that item alone after a confirmation. The Del key does the same for the selected block, as in File Explorer.
+
 ## En français
 
 Snoopr est un visualiseur d'espace disque libre pour Windows : il scanne un disque et l'affiche en treemap, avec une couleur par type de contenu et un filtre d'ancienneté pour repérer ce qui ne sert plus.
-On ajoute des éléments au panier, puis on les supprime après confirmation, par défaut vers la corbeille.
+On ajoute des éléments au panier, puis on les supprime après confirmation, par défaut vers la corbeille. Clic droit sur un bloc → Supprimer… pour supprimer un seul élément après confirmation ; la touche Suppr fait de même pour le bloc sélectionné.
 Des garde-fous bloquent la suppression des éléments système (Windows, Program Files, pagefile.sys, profils...) et avertissent pour les jeux, dossiers cloud et disques virtuels.
 Aucune suppression définitive silencieuse, aucun droit administrateur requis, aucun accès réseau.
 L'interface suit la langue de Windows (français ou anglais). Compilation : `cargo build --release`. Lancement : `snoopr.exe [chemin]`.

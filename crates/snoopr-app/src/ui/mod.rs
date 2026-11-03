@@ -1,3 +1,4 @@
+pub mod context_menu;
 pub mod legend;
 pub mod modals;
 pub mod start;

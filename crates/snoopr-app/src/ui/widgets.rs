@@ -1,7 +1,7 @@
 //! Small custom widgets shared by the top bar and the status bar.
 
 use crate::icons::{Icon, paint_icon};
-use crate::theme::{AMBER, TEXT, TEXT_MUTED, bold};
+use crate::theme::{AMBER, LOCK_TEXT, TEXT, TEXT_MUTED, bold};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 pub const BAR_FONT: f32 = 12.5;
@@ -241,6 +241,50 @@ pub fn menu_row(
         );
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A destructive menu row (red text, icon in the same colour). Disabled, it is
+/// dimmed and reacts neither to hover nor with a hand cursor.
+pub fn danger_row(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), sense);
+    let p = ui.painter();
+    let col = if enabled {
+        LOCK_TEXT
+    } else {
+        TEXT_MUTED.gamma_multiply(0.5)
+    };
+    if enabled && resp.hovered() {
+        p.rect_filled(rect, 6.0, MENU_HOVER);
+    }
+    let cy = rect.center().y;
+    let x = rect.left() + 10.0;
+    paint_icon(
+        p,
+        Rect::from_center_size(pos2(x + 7.5, cy), vec2(15.0, 15.0)),
+        icon,
+        col,
+    );
+    let g = p.layout_no_wrap(label.into(), font(), col);
+    let gh = g.size().y;
+    p.galley(pos2(x + 23.0, cy - gh / 2.0), g, col);
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
+/// A small grey explanation under a menu row; wraps, indented by 10 px.
+pub fn menu_note(ui: &mut Ui, text: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new(text).size(11.0).color(TEXT_MUTED));
+    });
 }
 
 /// The 15 px gradient square of the logo.

@@ -59,7 +59,13 @@ pub struct Strings {
     pub recycle_bin_name: &'static str,
     pub unscanned_name: &'static str,
     pub unscanned_explain: &'static str,
-    pub double_click: &'static str,
+    pub menu_enter: &'static str,
+    pub menu_reveal: &'static str,
+    pub menu_delete: &'static str,
+    pub menu_empty_bin: &'static str,
+    pub in_bin_note: &'static str,
+    pub busy_scan: &'static str,
+    pub busy_delete: &'static str,
     pub bin_info: &'static str,
     pub cancel: &'static str,
     pub delete_permanently: &'static str,
@@ -96,12 +102,18 @@ pub static FR: Strings = Strings {
     in_bin: "Déjà dans la corbeille",
     basket: "Panier",
     basket_title: "Panier de nettoyage",
-    basket_empty: "Le panier est vide. Sélectionne un bloc puis « Ajouter au panier » (ou Suppr). Rien n’est effacé tant que tu n’as pas confirmé.",
+    basket_empty: "Le panier est vide. Sélectionne un bloc puis « Ajouter au panier ». Rien n’est effacé tant que tu n’as pas confirmé.",
     wait_scan: "Attends la fin du scan pour supprimer.",
     recycle_bin_name: "Corbeille",
     unscanned_name: "Non analysé",
     unscanned_explain: "Dossiers inaccessibles et espace réservé par le système (points de restauration…).",
-    double_click: "Double-clic pour entrer",
+    menu_enter: "Entrer dans le dossier",
+    menu_reveal: "Afficher dans l’Explorateur",
+    menu_delete: "Supprimer…",
+    menu_empty_bin: "Vider la corbeille…",
+    in_bin_note: "Déjà dans la corbeille",
+    busy_scan: "Disponible à la fin du scan",
+    busy_delete: "Disponible à la fin de la suppression",
     bin_info: "La corbeille garde les fichiers sur le disque : la place n’est vraiment libérée qu’une fois la corbeille vidée. « Supprimer définitivement » libère la place tout de suite, mais on ne peut plus revenir en arrière.",
     cancel: "Annuler",
     delete_permanently: "Supprimer définitivement",
@@ -138,12 +150,18 @@ pub static EN: Strings = Strings {
     in_bin: "Already in Recycle Bin",
     basket: "Basket",
     basket_title: "Cleanup basket",
-    basket_empty: "The basket is empty. Select a block, then “Add to basket” (or Del). Nothing is deleted until you confirm.",
+    basket_empty: "The basket is empty. Select a block, then “Add to basket”. Nothing is deleted until you confirm.",
     wait_scan: "Wait for the scan to finish before deleting.",
     recycle_bin_name: "Recycle Bin",
     unscanned_name: "Not scanned",
     unscanned_explain: "Inaccessible folders and space reserved by the system (restore points…).",
-    double_click: "Double-click to open",
+    menu_enter: "Open folder",
+    menu_reveal: "Show in File Explorer",
+    menu_delete: "Delete…",
+    menu_empty_bin: "Empty Recycle Bin…",
+    in_bin_note: "Already in the Recycle Bin",
+    busy_scan: "Available once the scan ends",
+    busy_delete: "Available once the deletion ends",
     bin_info: "The Recycle Bin keeps files on disk: space is only freed once it is emptied. “Delete permanently” frees space right away, but cannot be undone.",
     cancel: "Cancel",
     delete_permanently: "Delete permanently",
@@ -397,6 +415,33 @@ pub fn empty_bin_body(l: Lang, bytes: u64, drive: &str) -> String {
         format!("Les {x} de la corbeille de {drive} seront définitivement supprimés.")
     } else {
         format!("The {x} in the {drive} Recycle Bin will be permanently deleted.")
+    }
+}
+
+/// Last line of the block tooltip; `deletable` means the item can go to the basket.
+pub fn hint_line(l: Lang, is_dir: bool, deletable: bool) -> Option<&'static str> {
+    match (is_dir, deletable) {
+        (true, true) => Some(pick(
+            l,
+            "Double-clic pour entrer · clic droit pour supprimer",
+            "Double-click to open · right-click to delete",
+        )),
+        (true, false) => Some(pick(l, "Double-clic pour entrer", "Double-click to open")),
+        (false, true) => Some(pick(
+            l,
+            "Clic droit pour supprimer",
+            "Right-click to delete",
+        )),
+        (false, false) => None,
+    }
+}
+
+/// Menu note of an item already covered by the basket folder `parent`.
+pub fn covered_note(l: Lang, parent: &str) -> String {
+    if is_fr(l) {
+        format!("Déjà dans le panier avec «\u{a0}{parent}\u{a0}»")
+    } else {
+        format!("Already in the basket with “{parent}”")
     }
 }
 
@@ -767,6 +812,38 @@ mod tests {
         assert_eq!(
             mostly_line(Lang::En, Archive, 0.996),
             "Mostly: Archives & installers (100%)"
+        );
+    }
+
+    #[test]
+    fn hint_lines() {
+        let fr = |d, x| hint_line(Lang::Fr, d, x);
+        let en = |d, x| hint_line(Lang::En, d, x);
+        assert_eq!(
+            fr(true, true),
+            Some("Double-clic pour entrer · clic droit pour supprimer")
+        );
+        assert_eq!(fr(true, false), Some("Double-clic pour entrer"));
+        assert_eq!(fr(false, true), Some("Clic droit pour supprimer"));
+        assert_eq!(fr(false, false), None);
+        assert_eq!(
+            en(true, true),
+            Some("Double-click to open · right-click to delete")
+        );
+        assert_eq!(en(true, false), Some("Double-click to open"));
+        assert_eq!(en(false, true), Some("Right-click to delete"));
+        assert_eq!(en(false, false), None);
+    }
+
+    #[test]
+    fn covered_notes() {
+        assert_eq!(
+            covered_note(Lang::Fr, "Videos"),
+            format!("Déjà dans le panier avec «{NB}Videos{NB}»")
+        );
+        assert_eq!(
+            covered_note(Lang::En, "Videos"),
+            "Already in the basket with “Videos”"
         );
     }
 }
