@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod age;
 pub mod basket;
+pub mod delete;
 pub mod layout;
 pub mod rules;
 pub mod scan;
