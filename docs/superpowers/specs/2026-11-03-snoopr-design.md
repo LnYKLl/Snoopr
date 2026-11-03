@@ -85,15 +85,39 @@ Le style est sombre et épuré (fond ~`#0f1116`), avec des coins arrondis. La po
 ### 6.3 Treemap [décidé : style « dossiers imbriqués »]
 
 - **Disposition** : *squarified treemap* (rectangles les plus carrés possibles), trié par taille.
-- **Dossiers** : un conteneur arrondi (rayon ~6 px) avec un **bandeau** de ~16 px qui affiche le nom et la taille. Les enfants sont dessinés à l'intérieur, avec un retrait de ~3 px. Le bandeau n'apparaît que si le conteneur est assez grand (repère : ≥ 50 × 36 px).
-- **Fichiers** : des blocs arrondis (rayon ~4 px) avec un léger dégradé.
+- **Dossiers** : un conteneur arrondi (rayon ~6 px), **neutre** (gris-bleu sombre, légèrement plus clair en profondeur), avec un **bandeau** de ~16 px qui affiche le nom et la taille. Les enfants sont dessinés à l'intérieur, avec un retrait de ~3 px.
+  - Un dossier n'est « ouvert » (bandeau + contenu) que s'il est assez grand (repère : ≥ 64 × 40 px).
+  - En dessous, il est dessiné comme **un seul bloc plein**, de la couleur de son type dominant, avec son nom. On évite ainsi l'effet « poupées russes ».
+  - Le conteneur de la Corbeille garde une teinte rouge sombre pour se repérer.
+- **Fichiers** : des blocs arrondis (rayon ~4 px), toujours plus clairs que leur dossier.
 - **Espacement** : environ 1,5 px entre les blocs.
-- **Couleurs** : chaque enfant direct de la racine **scannée** a sa propre teinte, et cette teinte reste la même quand on zoome. La luminosité des conteneurs augmente avec la profondeur. Les éléments système bloqués (Windows, etc.) sont désaturés pour s'effacer visuellement **[mon choix]**. La palette exacte est au choix du constructeur.
+- **Couleurs [décidé : variante A, « couleur = type de contenu »]** : chaque fichier prend la couleur de son **type**, et un dossier fermé celle du type qui pèse le plus lourd à l'intérieur.
+
+  | Type | Couleur |
+  |---|---|
+  | Jeux | rouge |
+  | Vidéos & images | violet |
+  | Archives & installateurs | orange |
+  | Disques virtuels | turquoise |
+  | Cache & temporaire | vert |
+  | Programmes | bleu |
+  | Système | gris ardoise |
+  | Autres | gris |
+
+  - Le type se déduit de l'extension et du dossier parent. Par exemple, tout ce qui est sous `steamapps` est un jeu, tout ce qui est sous un dossier de cache est du cache, et tout ce qui est sous Windows relève du système.
+  - Une **légende** discrète, juste au-dessus de la barre d'état, rappelle les couleurs.
+  - Référence visuelle : variante A de l'artifact « Couleurs du treemap Snoopr ».
 - **Libellés** : nom et taille si le bloc fait au moins ~58 × 32 px, le nom seul (plus petit) si le bloc fait au moins ~42 × 17 px, et rien en dessous. Quand le filtre d'ancienneté est actif, la deuxième ligne devient « taille · ancienneté » (ex. « 70 Go · 1 an »).
 - **Petits fichiers** : les fichiers trop petits pour être visibles sont regroupés, dans chaque dossier, en un seul bloc « N petits fichiers » **[mon choix]**. Le seuil est au choix du constructeur.
 - **Profondeur** : on dessine aussi profondément que les blocs restent visibles.
 - **Pendant le scan** : le treemap se met à jour régulièrement (repère : environ 4 fois par seconde) sans clignoter de façon gênante.
-- **Survol** : le bloc s'éclaircit et une **bulle** suit la souris. Elle affiche le nom, la taille, le pourcentage du disque, « Modifié il y a… », le nombre d'éléments pour un dossier et l'éventuel avertissement de garde-fou. Pour un dossier, elle ajoute « Double-clic pour entrer ».
+- **Survol** : le bloc s'éclaircit et une **bulle** (fond opaque) suit la souris. Elle affiche :
+  - le nom, la taille et le pourcentage du disque ;
+  - « Modifié il y a… » ;
+  - le **type** pour un fichier (« Type : Jeux ») ;
+  - pour un dossier, le type dominant (« Surtout : Jeux (62 %) ») et le nombre d'éléments ;
+  - l'éventuel avertissement de garde-fou ;
+  - « Double-clic pour entrer » pour un dossier.
 - **Sélection** : contour blanc de 2 px. Les éléments du panier ont un contour ambre en pointillés.
 - **Zoom** : un double-clic sur un dossier en fait la racine de l'affichage. Une courte transition animée serait appréciable, mais elle n'est pas obligatoire.
 
