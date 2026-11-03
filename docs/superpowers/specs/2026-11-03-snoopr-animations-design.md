@@ -85,10 +85,12 @@ La dernière ligne de la bulle devient :
 |---|---|
 | Dossier supprimable | « Double-clic pour entrer · clic droit pour supprimer » |
 | Dossier non supprimable | « Double-clic pour entrer » |
-| Fichier ou groupe supprimable | « Clic droit pour supprimer » |
+| Fichier supprimable | « Clic droit pour supprimer » |
 | Autres cas | Pas d'indice. |
 
 Ici, « supprimable » veut dire que `primary_action` vaut Add ou Remove.
+
+Pas d'indice sur un bloc « N petits fichiers » : son clic droit vise le dossier parent tout entier.
 
 ## 3. Treemap animé
 
