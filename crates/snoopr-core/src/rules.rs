@@ -62,19 +62,37 @@ pub struct RuleContext {
     pub cloud_roots: Vec<PathBuf>,
 }
 
-/// Composants en minuscules : le prefixe de lecteur (s'il existe) puis les
-/// composants normaux. Le separateur de racine est ignore.
-fn parts(path: &Path) -> Vec<String> {
-    path.components()
-        .filter_map(|c| match c {
-            Component::Prefix(p) => {
-                let s = p.as_os_str().to_string_lossy().to_lowercase();
-                Some(s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s))
-            }
-            Component::Normal(s) => Some(s.to_string_lossy().to_lowercase()),
-            _ => None,
-        })
-        .collect()
+/// Composants en minuscules : le prefixe de lecteur puis les composants
+/// normaux. Renvoie `None` si le chemin n'est pas absolu normalise (pas de
+/// prefixe suivi d'une racine, ou composant `..`) : l'appelant bloque alors.
+fn parts(path: &Path) -> Option<Vec<String>> {
+    let mut it = path.components();
+    let Component::Prefix(p) = it.next()? else {
+        return None;
+    };
+    let s = p.as_os_str().to_string_lossy().to_lowercase();
+    let s = s
+        .strip_prefix(r"\\?\")
+        .or_else(|| s.strip_prefix(r"\\.\"))
+        .unwrap_or(&s)
+        .to_owned();
+    let mut out = vec![s];
+    if !matches!(it.next()?, Component::RootDir) {
+        return None;
+    }
+    for c in it {
+        match c {
+            Component::Normal(s) => out.push(s.to_string_lossy().to_lowercase()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Variante pour les dossiers du contexte : vide (jamais de correspondance) si invalide.
+fn ctx_parts(path: &Path) -> Vec<String> {
+    parts(path).unwrap_or_default()
 }
 
 fn starts_with(path: &[String], prefix: &[String]) -> bool {
@@ -86,7 +104,9 @@ pub fn classify(path: &Path, ctx: &RuleContext) -> Verdict {
     use Verdict::{Allow, Block as Blk, Warn};
     use Warning as W;
 
-    let p = parts(path);
+    let Some(p) = parts(path) else {
+        return Blk(B::DriveRoot);
+    };
 
     // 1. Racine de disque.
     if p.len() <= 1 {
@@ -112,15 +132,15 @@ pub fn classify(path: &Path, ctx: &RuleContext) -> Verdict {
     }
 
     // 4. Dossiers systeme du contexte.
-    if starts_with(&p, &parts(&ctx.windows_dir)) {
+    if starts_with(&p, &ctx_parts(&ctx.windows_dir)) {
         return Blk(B::WindowsDir);
     }
-    if starts_with(&p, &parts(&ctx.program_data)) {
+    if starts_with(&p, &ctx_parts(&ctx.program_data)) {
         return Blk(B::ProgramData);
     }
 
     // 5. Profils.
-    let users = parts(&ctx.users_dir);
+    let users = ctx_parts(&ctx.users_dir);
     let mut in_appdata = false;
     if starts_with(&p, &users) {
         let rest = &p[users.len()..];
@@ -135,6 +155,9 @@ pub fn classify(path: &Path, ctx: &RuleContext) -> Verdict {
         let r: Vec<&str> = rest[1..].iter().map(String::as_str).collect();
         if r == ["appdata"] {
             return Blk(B::AppDataRoot);
+        }
+        if r == ["appdata", "local"] || r == ["appdata", "roaming"] {
+            return Blk(B::WindowsUserData);
         }
         if r.starts_with(&["appdata", "roaming", "microsoft"])
             || r.starts_with(&["appdata", "local", "microsoft"])
@@ -156,7 +179,7 @@ pub fn classify(path: &Path, ctx: &RuleContext) -> Verdict {
     if ctx
         .cloud_roots
         .iter()
-        .any(|root| starts_with(&p, &parts(root)))
+        .any(|root| starts_with(&p, &ctx_parts(root)))
     {
         return Warn(W::CloudSync);
     }
@@ -344,6 +367,17 @@ mod tests {
             (r"C:\Users\lenny\Documents\x.OST", Warn(W::OutlookData)),
             (r"C:\Users\lenny\Videos", Allow),
             (r"D:\Data\movie.mkv", Allow),
+            (r"C:\Users\lenny\AppData\Local", Block(B::WindowsUserData)),
+            (r"C:\Users\lenny\AppData\Roaming", Block(B::WindowsUserData)),
+            (r"C:\Users\lenny\..\..\Windows", Block(B::DriveRoot)),
+            (r"C:\Data\..", Block(B::DriveRoot)),
+            (r"C:\Data\..\Program Files\X", Block(B::DriveRoot)),
+            (r"C:\Users\lenny\Videos\..\AppData", Block(B::DriveRoot)),
+            (r"\Windows\System32", Block(B::DriveRoot)),
+            (r"\Program Files\Foo", Block(B::DriveRoot)),
+            (r"Windows\System32", Block(B::DriveRoot)),
+            (r"\\.\C:\Windows", Block(B::WindowsDir)),
+            (r"\\?\C:\Program Files\X", Block(B::ProgramFiles)),
         ];
         for (p, v) in cases {
             assert_eq!(classify(Path::new(p), &ctx()), *v, "{p}");
