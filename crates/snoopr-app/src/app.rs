@@ -7,9 +7,11 @@ use crate::theme;
 use crate::treemap::anim::TreemapAnim;
 use crate::treemap::{self, CachedLayout};
 use crate::ui;
+use crate::ui::activity::ActivityLine;
 use crate::ui::context_menu::{self, DeleteRow, MenuAction, menu_model};
 use crate::ui::modals::{self, Modal, ModalAction, OpenModal, Step, next_step};
 use crate::ui::statusbar::{self, StatusAction};
+use crate::ui::toast::{self, FreedToast};
 use crate::ui::topbar::{self, TopBarAction};
 use snoopr_core::actions::{PrimaryAction, primary_action};
 use snoopr_core::cleanup::DeleteRequest;
@@ -19,7 +21,7 @@ use snoopr_core::tree::{NodeId, Tree};
 use snoopr_core::volume::{Volume, list_fixed_volumes};
 use std::path::PathBuf;
 use std::sync::PoisonError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct SnooprApp {
     pub lang: Lang,
@@ -35,6 +37,12 @@ pub struct SnooprApp {
     pub modal: Option<OpenModal>,
     /// The block whose context menu is open.
     pub menu_target: Option<NodeId>,
+    /// The "freed" pill; recreated with each session.
+    pub freed_toast: FreedToast,
+    /// The activity line under the top bar.
+    pub activity: ActivityLine,
+    /// When the app was created: the start-screen cards animate from here.
+    pub start_appeared: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +108,9 @@ impl SnooprApp {
             elevated: system::is_elevated(),
             modal: None,
             menu_target: None,
+            freed_toast: FreedToast::new(0, crate::anim::motion_enabled()),
+            activity: ActivityLine::new(crate::anim::motion_enabled()),
+            start_appeared: Instant::now(),
         };
         if let Some(t) = target {
             app.start_session(t);
@@ -112,7 +123,9 @@ impl SnooprApp {
         if let Some(old) = &self.session {
             old.cancel();
         }
-        self.session = Some(Session::start(target, &self.rules));
+        let session = Session::start(target, &self.rules);
+        self.freed_toast = FreedToast::new(session.freed, crate::anim::motion_enabled());
+        self.session = Some(session);
         self.layout_cache = None;
         self.treemap_anim.reset();
         self.modal = None;
@@ -415,7 +428,10 @@ impl eframe::App for SnooprApp {
         let mut menu = MenuAction::None;
         let mut top = TopBarAction::None;
         let mut status = StatusAction::None;
+        let now = Instant::now();
+        let mut animating = false;
         if let Some(s) = &self.session {
+            self.freed_toast.update(s.freed, now);
             let r = egui::Panel::top("topbar")
                 .exact_size(44.0)
                 .frame(bar_frame(8))
@@ -429,6 +445,7 @@ impl eframe::App for SnooprApp {
                 rect.bottom() - 0.5,
                 egui::Stroke::new(1.0, theme::BORDER),
             );
+            animating |= self.activity.paint(ui, rect, s.activity(), now);
             let r = egui::Panel::bottom("statusbar")
                 .exact_size(30.0)
                 .frame(bar_frame(12))
@@ -459,7 +476,7 @@ impl eframe::App for SnooprApp {
         } else {
             egui::CentralPanel::default()
         };
-        panel.show(ui, |ui| {
+        let central = panel.show(ui, |ui| {
             if let Some(s) = &mut self.session {
                 let ev = treemap::show(
                     ui,
@@ -502,7 +519,7 @@ impl eframe::App for SnooprApp {
                     ui.ctx().request_repaint();
                 }
             } else {
-                picked = ui::start::show(ui, self.lang, &self.volumes);
+                picked = ui::start::show(ui, self.lang, &self.volumes, self.start_appeared);
             }
         });
         if !modal_open {
@@ -512,6 +529,14 @@ impl eframe::App for SnooprApp {
             self.apply_top(ui.ctx(), top);
             self.apply_status(ui.ctx(), status);
             self.apply_menu(ui.ctx(), menu);
+        }
+        // Over the treemap, under the dialogs.
+        if let Some(v) = self.freed_toast.view(now) {
+            toast::paint(ui, central.response.rect, v, self.lang);
+        }
+        animating |= self.freed_toast.is_animating(now);
+        if animating {
+            ui.ctx().request_repaint();
         }
         if let (Some(open), Some(s)) = (&mut self.modal, &self.session) {
             let a = modals::show(ui.ctx(), open, s, &self.rules, self.lang);
