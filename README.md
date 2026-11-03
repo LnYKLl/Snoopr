@@ -44,7 +44,7 @@ snoopr.exe [path]
 
 Without argument, Snoopr shows your drives, and a click starts the scan. With a path, it scans that path directly.
 
-Right-click a block, then "Delete...", to delete that item alone after a confirmation. The Del key does the same for the selected block, as in File Explorer.
+Right-click a block, then "Delete…", to delete that item alone after a confirmation. The Del key does the same for the selected block, as in File Explorer.
 
 ## En français
 

@@ -45,7 +45,7 @@ pub enum DeleteRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MenuModel {
     pub target: NodeId,
-    /// "Open folder": a folder other than the one shown.
+    /// "Go into folder": a folder other than the one shown.
     pub can_zoom: bool,
     /// "Show in File Explorer".
     pub reveal: bool,

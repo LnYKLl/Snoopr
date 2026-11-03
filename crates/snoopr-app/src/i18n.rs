@@ -102,7 +102,7 @@ pub static FR: Strings = Strings {
     in_bin: "Déjà dans la corbeille",
     basket: "Panier",
     basket_title: "Panier de nettoyage",
-    basket_empty: "Le panier est vide. Sélectionne un bloc puis « Ajouter au panier ». Rien n’est effacé tant que tu n’as pas confirmé.",
+    basket_empty: "Le panier est vide. Sélectionne un bloc puis «\u{a0}Ajouter au panier\u{a0}». Rien n’est effacé tant que tu n’as pas confirmé.",
     wait_scan: "Attends la fin du scan pour supprimer.",
     recycle_bin_name: "Corbeille",
     unscanned_name: "Non analysé",
@@ -155,7 +155,7 @@ pub static EN: Strings = Strings {
     recycle_bin_name: "Recycle Bin",
     unscanned_name: "Not scanned",
     unscanned_explain: "Inaccessible folders and space reserved by the system (restore points…).",
-    menu_enter: "Open folder",
+    menu_enter: "Go into folder",
     menu_reveal: "Show in File Explorer",
     menu_delete: "Delete…",
     menu_empty_bin: "Empty Recycle Bin…",
@@ -772,6 +772,15 @@ mod tests {
         );
         assert_eq!(Lang::Fr.s().cancel, "Annuler");
         assert_eq!(Lang::En.s().choose_folder, "Choose a folder…");
+        assert!(
+            Lang::Fr
+                .s()
+                .basket_empty
+                .contains(&format!("«{NB}Ajouter au panier{NB}»"))
+        );
+        // Not "Open": that top-bar button reveals in File Explorer.
+        assert_eq!(Lang::En.s().menu_enter, "Go into folder");
+        assert_eq!(Lang::Fr.s().menu_enter, "Entrer dans le dossier");
     }
     #[test]
     fn file_types() {
