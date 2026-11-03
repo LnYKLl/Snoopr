@@ -183,3 +183,56 @@ fn pinned_open_failure_reports_in_use() {
     assert!(!d.join("gone.txt").exists());
     drop(holder);
 }
+
+/// Pose une balise de point d analyse inconnue (non lien) sur un dossier vide.
+/// Retourne `false` si le système refuse (privilèges), le test est alors ignoré.
+fn set_custom_reparse_tag(dir: &std::path::Path) -> bool {
+    use std::ffi::c_void;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+
+    let Ok(h) = std::fs::OpenOptions::new()
+        .access_mode(0x0002 | 0x0100) // FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
+        .share_mode(7)
+        .custom_flags(0x0200_0000 | 0x0020_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        .open(dir)
+    else {
+        return false;
+    };
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&0x8000_0123u32.to_le_bytes()); // balise inconnue, pas un lien
+    buf.extend_from_slice(&4u16.to_le_bytes()); // 4 octets de données
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&[1, 2, 3, 4]);
+    // SAFETY: `buf` est un tampon valide pour la durée de l'appel, sa taille est passée telle quelle.
+    unsafe {
+        DeviceIoControl(
+            HANDLE(h.as_raw_handle()),
+            FSCTL_SET_REPARSE_POINT,
+            Some(buf.as_ptr().cast::<c_void>()),
+            buf.len() as u32,
+            None,
+            0,
+            None,
+            None,
+        )
+    }
+    .is_ok()
+}
+
+#[test]
+fn deletes_directory_with_non_link_reparse_tag() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    write_file(&d.join("x.txt"), 10);
+    let tagged = d.join("tagged");
+    std::fs::create_dir_all(&tagged).unwrap();
+    if !set_custom_reparse_tag(&tagged) {
+        return; // privilèges insuffisants : test ignoré
+    }
+    assert_eq!(delete_permanently(&d), ItemOutcome::Removed);
+    assert!(!d.exists());
+}

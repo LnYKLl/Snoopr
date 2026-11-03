@@ -38,7 +38,7 @@ fn push_failure(failures: &mut Vec<Failure>, path: &Path, e: &io::Error) {
 mod imp {
     use super::{is_not_found, push_failure};
     use crate::delete::Failure;
-    use crate::scan::fs::{RawEntry, enumerate_handle};
+    use crate::scan::fs::{RawEntry, enumerate_handle, is_link_tag};
     use std::ffi::c_void;
     use std::fs::{File, OpenOptions};
     use std::io;
@@ -56,13 +56,14 @@ mod imp {
     };
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
         FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
         FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
         FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_FLAGS_AND_ATTRIBUTES, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileDispositionInfo,
-        FileDispositionInfoEx, SYNCHRONIZE, SetFileInformationByHandle,
+        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FileAttributeTagInfo, FileBasicInfo,
+        FileDispositionInfo, FileDispositionInfoEx, GetFileInformationByHandleEx, SYNCHRONIZE,
+        SetFileInformationByHandle,
     };
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
     use windows::core::PWSTR;
@@ -128,17 +129,33 @@ mod imp {
         }
     }
 
+    /// Attributs et tag de point d'analyse, lus sur le handle (aucun accès par chemin).
+    fn attribute_tag(f: &File) -> io::Result<(u32, u32)> {
+        let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: `info` est une structure valide en écriture et la taille passée est la sienne.
+        unsafe {
+            GetFileInformationByHandleEx(
+                handle_of(f),
+                FileAttributeTagInfo,
+                (&raw mut info).cast::<c_void>(),
+                std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        }
+        .map_err(|e| to_io(&e))?;
+        Ok((info.FileAttributes, info.ReparseTag))
+    }
+
     /// Traite un objet ouvert (jamais par chemin). Retourne `true` pour un vrai dossier.
     fn process(f: File, display: &Path, failures: &mut Vec<Failure>) -> bool {
-        let attrs = match f.metadata() {
-            Ok(m) => m.file_attributes(),
+        let (attrs, tag) = match attribute_tag(&f) {
+            Ok(v) => v,
             Err(e) => {
                 push_failure(failures, display, &e);
                 return false;
             }
         };
-        if attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-            // Lien ou jonction : on supprime l'objet lien lui-même, sans le traverser.
+        if is_link_tag(attrs, tag) {
+            // Jonction ou lien symbolique : on supprime l'objet lien lui-même, sans le traverser.
             delete_and_report(f, display, failures);
             false
         } else if attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {

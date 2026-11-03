@@ -54,6 +54,28 @@ pub fn read_dir_entries(dir: &Path) -> io::Result<Vec<RawEntry>> {
 #[cfg(windows)]
 pub(crate) use win::enumerate_handle;
 
+const ATTR_REPARSE_POINT: u32 = 0x400;
+const TAG_MOUNT_POINT: u32 = 0xA000_0003;
+const TAG_SYMLINK: u32 = 0xA000_000C;
+
+/// Vrai pour une jonction ou un lien symbolique uniquement (pas les placeholders cloud, etc.).
+pub(crate) fn is_link_tag(attrs: u32, tag: u32) -> bool {
+    attrs & ATTR_REPARSE_POINT != 0 && matches!(tag, TAG_MOUNT_POINT | TAG_SYMLINK)
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn only_mount_point_and_symlink_are_links() {
+        assert!(is_link_tag(0x410, 0xA000_0003));
+        assert!(is_link_tag(0x400, 0xA000_000C));
+        assert!(!is_link_tag(0x410, 0x9000_601A));
+        assert!(!is_link_tag(0x10, 0xA000_0003));
+    }
+}
+
 #[cfg(windows)]
 mod win {
     use super::{RawEntry, to_verbatim};
@@ -63,15 +85,13 @@ mod win {
     use std::path::Path;
     use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
-        GetFileInformationByHandleEx, OPEN_EXISTING,
+        CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
+        FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileFullDirectoryInfo, FileFullDirectoryRestartInfo, GetFileInformationByHandleEx,
+        OPEN_EXISTING,
     };
     use windows::core::PCWSTR;
 
-    const TAG_MOUNT_POINT: u32 = 0xA000_0003;
-    const TAG_SYMLINK: u32 = 0xA000_000C;
     const BUF_BYTES: usize = 64 * 1024;
 
     /// Ferme le handle à la sortie de portée.
@@ -184,11 +204,10 @@ mod win {
             let name = OsString::from_wide(&units);
             if name != "." && name != ".." {
                 let attrs = info.FileAttributes;
-                let reparse = attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0;
                 out.push(RawEntry {
                     name,
                     is_dir: attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-                    is_link: reparse && matches!(info.EaSize, TAG_MOUNT_POINT | TAG_SYMLINK),
+                    is_link: super::is_link_tag(attrs, info.EaSize),
                     alloc_size: info.AllocationSize.max(0) as u64,
                     modified: filetime_to_unix(info.LastWriteTime),
                     created: filetime_to_unix(info.CreationTime),
