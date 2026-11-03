@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p snoopr-app
+      - name: Rename binary
+        run: Move-Item target/release/snoopr-app.exe target/release/snoopr.exe
+        shell: pwsh
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/snoopr.exe
