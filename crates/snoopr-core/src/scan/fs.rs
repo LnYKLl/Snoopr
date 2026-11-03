@@ -19,15 +19,31 @@ pub struct RawEntry {
 }
 
 /// `C:\a` -> `\\?\C:\a` ; `\\srv\share\x` -> `\\?\UNC\srv\share\x` ; déjà verbatim -> inchangé.
+/// Sans perte : les surrogates isolés des noms Windows sont conservés.
+#[cfg(windows)]
 pub fn to_verbatim(path: &Path) -> PathBuf {
-    let s = path.as_os_str().to_string_lossy();
-    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let starts = |p: &str| {
+        let p: Vec<u16> = p.encode_utf16().collect();
+        units.starts_with(&p)
+    };
+    if starts(r"\\?\") || starts(r"\\.\") {
         path.to_path_buf()
-    } else if let Some(rest) = s.strip_prefix(r"\\") {
-        PathBuf::from(format!(r"\\?\UNC\{rest}"))
+    } else if starts(r"\\") {
+        let mut out = OsString::from(r"\\?\UNC\");
+        out.push(OsString::from_wide(&units[2..]));
+        PathBuf::from(out)
     } else {
-        PathBuf::from(format!(r"\\?\{s}"))
+        let mut out = OsString::from(r"\\?\");
+        out.push(path.as_os_str());
+        PathBuf::from(out)
     }
+}
+
+#[cfg(not(windows))]
+pub fn to_verbatim(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 #[cfg(windows)]
@@ -140,11 +156,11 @@ mod win {
         let name_off = std::mem::offset_of!(FILE_FULL_DIR_INFO, FileName);
         let mut off = 0usize;
         loop {
-            if off + name_off > bytes.len() {
+            if off + std::mem::size_of::<FILE_FULL_DIR_INFO>() > bytes.len() {
                 return;
             }
-            // SAFETY: off + name_off <= len ; lecture non alignée d'une struct POD
-            // dont la partie fixe tient dans les octets vérifiés.
+            // SAFETY: off + size_of::<FILE_FULL_DIR_INFO>() <= len (vérifié ci-dessus) ;
+            // lecture non alignée d'une struct POD entièrement contenue dans `bytes`.
             let info: FILE_FULL_DIR_INFO = unsafe {
                 std::ptr::read_unaligned(bytes.as_ptr().add(off).cast::<FILE_FULL_DIR_INFO>())
             };
@@ -175,6 +191,29 @@ mod win {
                 return;
             }
             off += next;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn truncated_header_yields_nothing() {
+            let buf = vec![0u8; std::mem::offset_of!(FILE_FULL_DIR_INFO, FileName)];
+            let mut v = Vec::new();
+            parse_chain(&buf, &mut v);
+            assert!(v.is_empty());
+        }
+
+        #[test]
+        fn name_running_past_end_yields_nothing() {
+            let mut buf = vec![0u8; std::mem::size_of::<FILE_FULL_DIR_INFO>()];
+            // FileNameLength (offset 60) = 40 octets, mais le tampon s'arrête avant.
+            buf[60..64].copy_from_slice(&40u32.to_le_bytes());
+            let mut v = Vec::new();
+            parse_chain(&buf, &mut v);
+            assert!(v.is_empty());
         }
     }
 }

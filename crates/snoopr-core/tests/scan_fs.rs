@@ -49,6 +49,22 @@ fn missing_dir_is_not_found() {
 }
 
 #[test]
+fn lone_surrogate_names_round_trip() {
+    use std::os::windows::ffi::OsStringExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let name = OsString::from_wide(&[0xD800, 'a' as u16]);
+    let dir = tmp.path().join(&name);
+    std::fs::create_dir(&dir).unwrap();
+    write_file(&dir.join("f.txt"), 10);
+    let top = read_dir_entries(tmp.path()).unwrap();
+    let listed = &top.iter().find(|e| e.is_dir).unwrap().name;
+    assert_eq!(listed, &name);
+    let es = read_dir_entries(&tmp.path().join(listed)).unwrap();
+    assert_eq!(es.len(), 1);
+    assert_eq!(es[0].name, OsString::from("f.txt"));
+}
+
+#[test]
 fn verbatim_forms() {
     assert_eq!(to_verbatim(Path::new(r"C:\a")), PathBuf::from(r"\\?\C:\a"));
     assert_eq!(
