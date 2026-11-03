@@ -1,16 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-// Part of the i18n API is consumed by Tasks 13-15.
+// Status bar, basket and deletion texts are consumed by Tasks 14-15.
 #[allow(dead_code)]
 mod i18n;
-// Unused icons and palette entries are consumed by Tasks 13-15.
-#[allow(dead_code)]
 mod icons;
-#[allow(dead_code)]
 mod session;
-#[allow(dead_code)]
 mod theme;
+mod treemap;
 mod ui;
 
 use std::ffi::OsString;

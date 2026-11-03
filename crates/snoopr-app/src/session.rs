@@ -28,8 +28,11 @@ pub struct Session {
     pub view: View,
     pub basket: Basket,
     pub bin_bytes: u64,
+    #[allow(dead_code)] // shown by the status bar (Task 14)
     pub freed: u64,
     pub usage: (u64, u64),
+    /// Disk size read once at start, for percentages while `usage` is unknown.
+    pub disk_total: u64,
 }
 
 fn mtime_secs(path: &std::path::Path) -> i64 {
@@ -60,6 +63,7 @@ impl Session {
             bin_bytes: 0,
             freed: 0,
             usage: (0, 0),
+            disk_total: 0,
         }
     }
 
@@ -67,6 +71,7 @@ impl Session {
     pub fn start(target: PathBuf) -> Session {
         let tree = Tree::new(target.clone(), mtime_secs(&target));
         let mut s = Session::new(target.clone(), tree, None);
+        s.disk_total = volume_usage(&target).map_or(0, |u| u.0);
         let root = s.view.root;
         s.scan = Some(start_scan(s.tree.clone(), root, target));
         s
@@ -93,6 +98,15 @@ impl Session {
         self.scan.is_some()
     }
 
+    /// Total disk size for percentages: the final usage, else the one read at start; 0 if unknown.
+    pub fn disk_size(&self) -> u64 {
+        if self.usage.0 > 0 {
+            self.usage.0
+        } else {
+            self.disk_total
+        }
+    }
+
     /// Stops a running scan (a dropped handle would keep scanning).
     pub fn cancel(&self) {
         if let Some(s) = &self.scan {
@@ -111,6 +125,7 @@ impl Session {
         }
     }
 
+    #[allow(dead_code)] // the Up button and Backspace (Task 14)
     pub fn up(&mut self) {
         let parent = self
             .tree

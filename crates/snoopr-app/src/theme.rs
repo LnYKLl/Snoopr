@@ -1,6 +1,6 @@
 //! Colors, block palettes, visuals and fonts.
 
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke};
+use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke};
 use std::sync::Arc;
 
 pub const BG: Color32 = Color32::from_rgb(0x0f, 0x11, 0x16);
@@ -10,9 +10,11 @@ pub const TEXT: Color32 = Color32::from_rgb(0xe8, 0xe9, 0xee);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8b, 0x8d, 0x98);
 pub const ACCENT: Color32 = Color32::from_rgb(0x3b, 0x6f, 0xe0);
 pub const AMBER: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+#[allow(dead_code)] // delete buttons (Tasks 14-15)
 pub const DANGER: Color32 = Color32::from_rgb(0xc2, 0x36, 0x4a);
 pub const LOCK_TEXT: Color32 = Color32::from_rgb(0xf3, 0xb4, 0xb4);
 pub const WARN_TEXT: Color32 = Color32::from_rgb(0xf3, 0xd7, 0x9a);
+#[allow(dead_code)] // "freed" text of the status bar (Task 14)
 pub const OK_TEXT: Color32 = Color32::from_rgb(0x6e, 0xe7, 0xa8);
 
 pub const HUES: [f32; 8] = [212., 335., 168., 28., 265., 45., 190., 300.];
@@ -104,24 +106,49 @@ pub fn apply_visuals(ctx: &egui::Context) {
     ctx.set_visuals(v);
 }
 
-/// Segoe UI Variable (or Segoe UI) in front of the proportional family; never panics.
+const BOLD_FAMILY: &str = "bold";
+
+/// Semibold text (egui has no font weights): Segoe UI Semibold, or the regular
+/// proportional fonts when it is missing.
+pub fn bold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(BOLD_FAMILY.into()))
+}
+
+/// Segoe UI Variable (or Segoe UI) in front of the proportional family, and the
+/// `bold` family used by [`bold`]; never panics.
 pub fn install_fonts(ctx: &egui::Context) {
-    let bytes = [
+    let read = |paths: &[&str]| paths.iter().find_map(|p| std::fs::read(p).ok());
+    let mut fonts = FontDefinitions::default();
+    let mut prop = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(bytes) = read(&[
         r"C:\Windows\Fonts\SegUIVar.ttf",
         r"C:\Windows\Fonts\segoeui.ttf",
-    ]
-    .iter()
-    .find_map(|p| std::fs::read(p).ok());
-    let Some(bytes) = bytes else { return };
-    let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("segoe".to_owned(), Arc::new(FontData::from_owned(bytes)));
+    ]) {
+        fonts
+            .font_data
+            .insert("segoe".to_owned(), Arc::new(FontData::from_owned(bytes)));
+        prop.insert(0, "segoe".to_owned());
+    }
+    // The family must exist even without the font file, or egui panics on use.
+    let mut bold = prop.clone();
+    if let Some(bytes) = read(&[
+        r"C:\Windows\Fonts\seguisb.ttf",
+        r"C:\Windows\Fonts\segoeuib.ttf",
+    ]) {
+        fonts.font_data.insert(
+            "segoe-semibold".to_owned(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        bold.insert(0, "segoe-semibold".to_owned());
+    }
+    fonts.families.insert(FontFamily::Proportional, prop);
     fonts
         .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, "segoe".to_owned());
+        .insert(FontFamily::Name(BOLD_FAMILY.into()), bold);
     ctx.set_fonts(fonts);
 }
 

@@ -3,6 +3,7 @@
 use crate::i18n::Lang;
 use crate::session::Session;
 use crate::theme;
+use crate::treemap::{self, CachedLayout};
 use crate::ui;
 use snoopr_core::rules::RuleContext;
 use snoopr_core::volume::{Volume, list_fixed_volumes};
@@ -11,10 +12,11 @@ use std::time::Duration;
 
 pub struct SnooprApp {
     pub lang: Lang,
-    #[allow(dead_code)] // read by Task 14
     pub rules: RuleContext,
     pub volumes: Vec<Volume>,
     pub session: Option<Session>,
+    /// Treemap layout of the current session; reset when the session changes.
+    pub layout_cache: Option<CachedLayout>,
 }
 
 impl SnooprApp {
@@ -26,6 +28,7 @@ impl SnooprApp {
             rules: RuleContext::from_system(),
             volumes: list_fixed_volumes(),
             session: None,
+            layout_cache: None,
         };
         if let Some(t) = target {
             app.start_session(t);
@@ -39,6 +42,7 @@ impl SnooprApp {
             old.cancel();
         }
         self.session = Some(Session::start(target));
+        self.layout_cache = None;
     }
 }
 
@@ -54,10 +58,27 @@ impl eframe::App for SnooprApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut picked = None;
-        egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(s) = &self.session {
-                // Treemap and bars arrive with Task 13.
-                ui.label(s.target.display().to_string());
+        let panel = if self.session.is_some() {
+            // The treemap keeps its own 8 px margin.
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::BG))
+        } else {
+            egui::CentralPanel::default()
+        };
+        panel.show(ui, |ui| {
+            if let Some(s) = &mut self.session {
+                let ev = treemap::show(ui, s, &mut self.layout_cache, &self.rules, self.lang);
+                if let Some(id) = ev.clicked {
+                    s.select(id);
+                }
+                if ev.clicked_empty {
+                    s.select(s.view.root);
+                }
+                if let Some(id) = ev.double_clicked {
+                    s.zoom(id);
+                }
+                if ev.clicked.is_some() || ev.clicked_empty || ev.double_clicked.is_some() {
+                    ui.ctx().request_repaint();
+                }
             } else {
                 picked = ui::start::show(ui, self.lang, &self.volumes);
             }
