@@ -9,6 +9,7 @@ use crate::i18n::{
 };
 use crate::icons::{Icon, paint_icon};
 use crate::session::Session;
+use crate::system;
 use crate::theme::{ACCENT, DANGER, LOCK_TEXT, POPUP_BG, TEXT, TEXT_MUTED, WARN_TEXT, bold};
 use egui::{
     Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Painter, Rect, RichText, Sense, Stroke,
@@ -19,7 +20,7 @@ use snoopr_core::delete::recycle::{RecycleCapacity, fits_in_recycle_bin};
 use snoopr_core::delete::{DeleteMode, Failure};
 use snoopr_core::rules::{RuleContext, Verdict};
 use snoopr_core::tree::NodeId;
-use std::sync::PoisonError;
+use std::sync::{OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,44 +125,68 @@ pub fn next_step(
     }
 }
 
-/// How long a new dialog ignores its buttons, so that the second click of a
-/// double-click never hits a button that has just appeared under the cursor.
-pub const ARM_DELAY: Duration = Duration::from_millis(300);
+/// Shortest time a new dialog ignores its buttons.
+const MIN_ARM_DELAY: Duration = Duration::from_millis(300);
+/// Double-click time assumed where the system one is unknown.
+const FALLBACK_DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
-/// The buttons of a dialog act only once [`ARM_DELAY`] has passed since it
-/// appeared and the press of the click began after it appeared.
-pub fn buttons_armed(opened_at: Instant, now: Instant, pressed_since_open: bool) -> bool {
-    pressed_since_open
-        && now
-            .checked_duration_since(opened_at)
-            .is_some_and(|d| d >= ARM_DELAY)
+/// How long a new dialog ignores its buttons: at least the double-click time,
+/// so the second press of a double-click (it can come that late after the
+/// first) never acts on a dialog that the first click opened.
+pub fn arm_delay_for(double_click: Option<Duration>) -> Duration {
+    double_click
+        .unwrap_or(FALLBACK_DOUBLE_CLICK)
+        .max(MIN_ARM_DELAY)
 }
 
-/// Whether a pointer press began after the pass in which a dialog appeared.
-/// Presses of that pass predate the dialog: the user could not see it yet.
+/// [`arm_delay_for`] of the system double-click time, read once.
+pub fn arm_delay() -> Duration {
+    static DELAY: OnceLock<Duration> = OnceLock::new();
+    *DELAY.get_or_init(|| arm_delay_for(system::double_click_time()))
+}
+
+/// The buttons of a dialog act only once `delay` has passed since it appeared
+/// **and** a pointer press started at or after that moment: a press that
+/// started earlier (such as the second press of a double-click) never arms
+/// them, however long it is held.
+pub fn buttons_armed(
+    opened_at: Instant,
+    now: Instant,
+    press: Option<Instant>,
+    delay: Duration,
+) -> bool {
+    let Some(arms_at) = opened_at.checked_add(delay) else {
+        return false;
+    };
+    now >= arms_at && press.is_some_and(|p| p >= arms_at)
+}
+
+/// The first pointer press that started once a dialog's buttons may arm;
+/// earlier presses are not recorded.
 #[derive(Clone, Copy, Debug)]
 pub struct PressTracker {
-    opened_pass: u64,
-    pressed: bool,
+    arms_at: Option<Instant>,
+    first: Option<Instant>,
 }
 
 impl PressTracker {
-    pub fn new(opened_pass: u64) -> Self {
+    pub fn new(opened_at: Instant, delay: Duration) -> Self {
         PressTracker {
-            opened_pass,
-            pressed: false,
+            arms_at: opened_at.checked_add(delay),
+            first: None,
         }
     }
 
-    /// Records the input of pass `pass`; `pressed_now` = a button went down in it.
-    pub fn track(&mut self, pass: u64, pressed_now: bool) {
-        if pass > self.opened_pass && pressed_now {
-            self.pressed = true;
+    /// Records the input of a pass run at `at`; `pressed_now` = a button went
+    /// down in it.
+    pub fn track(&mut self, at: Instant, pressed_now: bool) {
+        if pressed_now && self.first.is_none() && self.arms_at.is_some_and(|a| at >= a) {
+            self.first = Some(at);
         }
     }
 
-    pub fn pressed_since_open(&self) -> bool {
-        self.pressed
+    pub fn first_press(&self) -> Option<Instant> {
+        self.first
     }
 }
 
@@ -180,15 +205,19 @@ fn gate(a: ModalAction, armed: bool) -> ModalAction {
 pub struct OpenModal {
     pub modal: Modal,
     opened_at: Instant,
+    delay: Duration,
     presses: PressTracker,
 }
 
 impl OpenModal {
-    pub fn new(modal: Modal, ctx: &egui::Context) -> Self {
+    pub fn new(modal: Modal) -> Self {
+        let opened_at = Instant::now();
+        let delay = arm_delay();
         OpenModal {
             modal,
-            opened_at: Instant::now(),
-            presses: PressTracker::new(ctx.cumulative_pass_nr()),
+            opened_at,
+            delay,
+            presses: PressTracker::new(opened_at, delay),
         }
     }
 }
@@ -227,15 +256,11 @@ pub fn show(
     rules: &RuleContext,
     lang: Lang,
 ) -> ModalAction {
-    open.presses.track(
-        ctx.cumulative_pass_nr(),
-        ctx.input(|i| i.pointer.any_pressed()),
-    );
-    let armed = buttons_armed(
-        open.opened_at,
-        Instant::now(),
-        open.presses.pressed_since_open(),
-    );
+    // A press is dated by the pass that sees it, right after it happened.
+    let now = Instant::now();
+    open.presses
+        .track(now, ctx.input(|i| i.pointer.any_pressed()));
+    let armed = buttons_armed(open.opened_at, now, open.presses.first_press(), open.delay);
     let m = &open.modal;
     let kind = match m {
         Modal::ConfirmDelete => "confirm-delete",
@@ -566,6 +591,7 @@ mod tests {
     use snoopr_core::delete::{DeleteMode, Failure, FailureReason};
     use snoopr_core::tree::NodeId;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     const A: NodeId = NodeId(1);
     const B: NodeId = NodeId(2);
@@ -730,17 +756,34 @@ mod tests {
         }
     }
 
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
     #[test]
-    fn buttons_arm_after_delay_and_a_new_press() {
-        use std::time::{Duration, Instant};
+    fn arm_delay_covers_the_double_click_time() {
+        assert_eq!(arm_delay_for(None), MS(500));
+        assert_eq!(arm_delay_for(Some(MS(200))), MS(300));
+        assert_eq!(arm_delay_for(Some(MS(300))), MS(300));
+        assert_eq!(arm_delay_for(Some(MS(900))), MS(900));
+        assert!(arm_delay() >= MS(300));
+    }
+
+    #[test]
+    fn buttons_arm_only_for_a_press_that_starts_after_the_delay() {
         let t0 = Instant::now();
-        let at = |ms| t0 + Duration::from_millis(ms);
-        assert!(!buttons_armed(t0, at(100), true));
-        assert!(!buttons_armed(t0, at(400), false));
-        assert!(buttons_armed(t0, at(400), true));
-        assert!(buttons_armed(t0, at(300), true));
+        let at = |ms| t0 + MS(ms);
+        let d = MS(500);
+        // The second press of a double-click: never arms, however late the check.
+        assert!(!buttons_armed(t0, at(900), Some(at(200)), d));
+        assert!(!buttons_armed(t0, at(5_000), Some(at(499)), d));
+        // A press that starts once the delay is over arms.
+        assert!(buttons_armed(t0, at(600), Some(at(600)), d));
+        assert!(buttons_armed(t0, at(900), Some(at(600)), d));
+        assert!(buttons_armed(t0, at(500), Some(at(500)), d));
+        // No press, or checked before the delay is over.
+        assert!(!buttons_armed(t0, at(900), None, d));
+        assert!(!buttons_armed(t0, at(400), Some(at(600)), d));
         // A clock going backwards never arms.
-        assert!(!buttons_armed(at(400), t0, true));
+        assert!(!buttons_armed(at(900), t0, Some(t0), d));
     }
 
     #[test]
@@ -761,15 +804,21 @@ mod tests {
     }
 
     #[test]
-    fn only_presses_after_the_opening_pass_count() {
-        let mut p = PressTracker::new(7);
-        p.track(7, true);
-        assert!(!p.pressed_since_open());
-        p.track(8, false);
-        assert!(!p.pressed_since_open());
-        p.track(9, true);
-        assert!(p.pressed_since_open());
-        p.track(10, false);
-        assert!(p.pressed_since_open());
+    fn only_presses_that_start_after_the_delay_count() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + MS(ms);
+        let d = MS(500);
+        let mut p = PressTracker::new(t0, d);
+        // The opening click, then the second press of a double-click.
+        p.track(t0, true);
+        p.track(at(200), true);
+        p.track(at(499), true);
+        p.track(at(600), false);
+        assert_eq!(p.first_press(), None);
+        assert!(!buttons_armed(t0, at(900), p.first_press(), d));
+        p.track(at(600), true);
+        p.track(at(700), true);
+        assert_eq!(p.first_press(), Some(at(600)));
+        assert!(buttons_armed(t0, at(700), p.first_press(), d));
     }
 }

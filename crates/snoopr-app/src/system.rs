@@ -1,4 +1,5 @@
-//! Windows integration: Explorer, elevation query and relaunch as administrator.
+//! Windows integration: Explorer, elevation query, relaunch as administrator
+//! and the double-click time.
 
 use std::io;
 use std::path::Path;
@@ -55,6 +56,21 @@ pub fn is_elevated() -> bool {
 #[cfg(not(windows))]
 pub fn is_elevated() -> bool {
     false
+}
+
+/// The longest gap Windows allows between the two clicks of a double-click
+/// (user setting, 500 ms by default).
+#[cfg(windows)]
+pub fn double_click_time() -> Option<std::time::Duration> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+    // SAFETY: no arguments; it only reads a user setting.
+    let ms = unsafe { GetDoubleClickTime() };
+    Some(std::time::Duration::from_millis(u64::from(ms)))
+}
+
+#[cfg(not(windows))]
+pub fn double_click_time() -> Option<std::time::Duration> {
+    None
 }
 
 /// Quotes one command-line argument (wide units, lossless) following the MSVC

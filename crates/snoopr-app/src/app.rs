@@ -118,7 +118,7 @@ impl SnooprApp {
         let Some(s) = &self.session else { return };
         if self.modal.is_none() && can_start_delete(s.is_busy(), s.basket.len()) {
             egui::Popup::close_all(ctx);
-            self.modal = Some(OpenModal::new(Modal::ConfirmDelete, ctx));
+            self.modal = Some(OpenModal::new(Modal::ConfirmDelete));
         }
     }
 
@@ -127,14 +127,14 @@ impl SnooprApp {
         let Some(s) = &self.session else { return };
         if self.modal.is_none() && !s.is_busy() {
             egui::Popup::close_all(ctx);
-            self.modal = Some(OpenModal::new(Modal::ConfirmEmptyBin, ctx));
+            self.modal = Some(OpenModal::new(Modal::ConfirmEmptyBin));
         }
     }
 
     /// Acts on a dialog button. Deleting only ever starts here, from a
     /// confirm button of the open dialog (see [`next_step`]); the session
     /// checks every item again before its worker touches the disk.
-    fn apply_modal(&mut self, ctx: &egui::Context, a: ModalAction) {
+    fn apply_modal(&mut self, a: ModalAction) {
         if a == ModalAction::None {
             return;
         }
@@ -152,7 +152,7 @@ impl SnooprApp {
             Step::Stay => {}
             Step::Close => self.modal = None,
             // A new dialog: its buttons wait again (no double-click carry-over).
-            Step::Open(next) => self.modal = Some(OpenModal::new(next, ctx)),
+            Step::Open(next) => self.modal = Some(OpenModal::new(next)),
             Step::Delete(plan) => {
                 self.modal = None;
                 let requests = plan
@@ -172,13 +172,13 @@ impl SnooprApp {
     }
 
     /// Shows the failures of finished jobs; they wait if another dialog is open.
-    fn collect_failures(&mut self, ctx: &egui::Context) {
+    fn collect_failures(&mut self) {
         let Some(s) = &mut self.session else { return };
         match self.modal.as_mut().map(|o| &mut o.modal) {
             None => {
                 let f = s.take_failures();
                 if !f.is_empty() {
-                    self.modal = Some(OpenModal::new(Modal::Failures(f), ctx));
+                    self.modal = Some(OpenModal::new(Modal::Failures(f)));
                 }
             }
             Some(Modal::Failures(list)) => list.extend(s.take_failures()),
@@ -304,7 +304,7 @@ impl eframe::App for SnooprApp {
                 ctx.request_repaint_after(Duration::from_millis(ms));
             }
         }
-        self.collect_failures(ctx);
+        self.collect_failures();
         let blocked = self.modal.is_some()
             || egui::Popup::is_any_open(ctx)
             || ctx.egui_wants_keyboard_input();
@@ -399,7 +399,7 @@ impl eframe::App for SnooprApp {
         }
         if let (Some(open), Some(s)) = (&mut self.modal, &self.session) {
             let a = modals::show(ui.ctx(), open, s, &self.rules, self.lang);
-            self.apply_modal(ui.ctx(), a);
+            self.apply_modal(a);
         }
     }
 }
