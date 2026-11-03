@@ -138,4 +138,19 @@ mod tests {
         );
         assert_eq!(primary_action(&t, &b, &c, videos), P::Remove);
     }
+
+    /// Outside a drive root, `$Recycle.Bin` is an ordinary folder: never
+    /// "Empty Recycle Bin", which would empty the drive's real bin.
+    #[test]
+    fn recycle_bin_name_below_a_folder_root_is_ordinary() {
+        use PrimaryAction as P;
+        let mut t = Tree::new(r"D:\Backup".into(), 0);
+        let r = t.root();
+        let bin = t.add_children(r, vec![e("$Recycle.Bin", NodeKind::Dir, 0)])[0];
+        let old = t.add_children(bin, vec![e("old.zip", NodeKind::File, 5)])[0];
+        let (b, c) = (Basket::default(), ctx());
+        assert_ne!(primary_action(&t, &b, &c, bin), P::EmptyRecycleBin);
+        assert_eq!(primary_action(&t, &b, &c, bin), P::Add);
+        assert_eq!(primary_action(&t, &b, &c, old), P::Add);
+    }
 }

@@ -378,26 +378,39 @@ impl Tree {
         root.size - unscanned
     }
 
-    /// The root child named `$Recycle.Bin` (case-insensitive), if any.
+    /// The drive's Recycle Bin: the root child named `$Recycle.Bin`
+    /// (case-insensitive), only when the root is a drive root. Below a folder
+    /// root (`D:\Backup`) a folder of that name is an ordinary folder: taking
+    /// it for the bin would offer to empty the drive's real one.
     pub fn recycle_bin(&self) -> Option<NodeId> {
+        if !self.root_is_drive {
+            return None;
+        }
         self.child_by_name(self.root(), OsStr::new(RECYCLE_BIN_NAME))
     }
 
-    pub fn ensure_recycle_bin(&mut self) -> NodeId {
+    /// [`Tree::recycle_bin`], created empty if missing; `None` when the root
+    /// is not a drive root.
+    pub fn ensure_recycle_bin(&mut self) -> Option<NodeId> {
+        if !self.root_is_drive {
+            return None;
+        }
         if let Some(id) = self.recycle_bin() {
-            return id;
+            return Some(id);
         }
         let root = self.root();
         let newest = self.node(root).newest;
-        self.add_children(
-            root,
-            vec![EntryData {
-                name: RECYCLE_BIN_NAME.into(),
-                kind: NodeKind::Dir,
-                size: 0,
-                newest,
-            }],
-        )[0]
+        Some(
+            self.add_children(
+                root,
+                vec![EntryData {
+                    name: RECYCLE_BIN_NAME.into(),
+                    kind: NodeKind::Dir,
+                    size: 0,
+                    newest,
+                }],
+            )[0],
+        )
     }
 }
 
@@ -459,7 +472,7 @@ mod tests {
     #[test]
     fn reparent_moves_size_under_recycle_bin() {
         let (mut t, users, a) = sample();
-        let bin = t.ensure_recycle_bin();
+        let bin = t.ensure_recycle_bin().unwrap();
         t.reparent(users, bin);
         assert_eq!(t.node(t.root()).size, 1026);
         assert_eq!(t.node(bin).size, 1010);
@@ -491,7 +504,19 @@ mod tests {
         let root = t.root();
         let b = t.add_children(root, vec![d("$RECYCLE.BIN", 0)])[0];
         assert_eq!(t.recycle_bin(), Some(b));
-        assert_eq!(t.ensure_recycle_bin(), b);
+        assert_eq!(t.ensure_recycle_bin(), Some(b));
+    }
+
+    /// Only a drive has a Recycle Bin: elsewhere `$Recycle.Bin` is an ordinary
+    /// folder (a backup copy, say), never the drive's real bin.
+    #[test]
+    fn recycle_bin_only_at_a_drive_root() {
+        let mut t = Tree::new(PathBuf::from(r"D:\Backup"), 0);
+        let root = t.root();
+        t.add_children(root, vec![d("$Recycle.Bin", 0)]);
+        assert_eq!(t.recycle_bin(), None);
+        assert_eq!(t.ensure_recycle_bin(), None);
+        assert_eq!(t.node(root).children.len(), 1);
     }
 
     #[test]
@@ -523,7 +548,7 @@ mod tests {
             FileType::Archive,
             1.0
         ));
-        let bin = t.ensure_recycle_bin();
+        let bin = t.ensure_recycle_bin().unwrap();
         assert_eq!(t.dominant_type(bin), None);
         t.reparent(u[1], bin);
         assert!(close(t.dominant_type(bin).unwrap(), FileType::Archive, 1.0));

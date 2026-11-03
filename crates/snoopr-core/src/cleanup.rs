@@ -2,7 +2,6 @@
 
 use crate::delete::{DeleteMode, Failure, FailureReason, ItemOutcome, permanent, recycle};
 use crate::tree::{EntryData, NodeId, NodeKind, Tree};
-use crate::volume::is_drive_root;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -96,8 +95,13 @@ pub fn apply_outcomes(
         match outcome {
             ItemOutcome::Failed(f) => applied.failures.push(f.clone()),
             ItemOutcome::Removed => {
-                if mode == DeleteMode::RecycleBin && is_drive_root(tree.root_path()) {
-                    let bin = tree.ensure_recycle_bin();
+                // Mis à la corbeille sur un arbre de disque : déplacé sous le
+                // bloc `$Recycle.Bin` (il n'y en a qu'à la racine d'un disque).
+                let bin = match mode {
+                    DeleteMode::RecycleBin => tree.ensure_recycle_bin(),
+                    DeleteMode::Permanent => None,
+                };
+                if let Some(bin) = bin {
                     tree.reparent(id, bin);
                 } else {
                     if mode == DeleteMode::Permanent {
@@ -245,6 +249,23 @@ mod tests {
         );
         assert_eq!(t.node(root).size, 0);
         assert!(!t.is_attached(videos));
+    }
+
+    /// A `$Recycle.Bin` folder below a folder root is not the drive's bin:
+    /// recycled items are detached, never moved into it.
+    #[test]
+    fn recycled_item_never_moves_into_a_folder_named_like_the_bin() {
+        let (mut t, videos, _) = sample(r"D:\Data");
+        let root = t.root();
+        let fake = t.add_children(root, vec![entry("$Recycle.Bin", NodeKind::Dir, 0)])[0];
+        apply_outcomes(
+            &mut t,
+            DeleteMode::RecycleBin,
+            &[(videos, ItemOutcome::Removed)],
+        );
+        assert!(!t.is_attached(videos));
+        assert_eq!(t.node(fake).size, 0);
+        assert_eq!(t.node(root).size, 0);
     }
 
     #[test]
