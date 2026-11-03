@@ -1,0 +1,3 @@
+# Static C runtime: the release exe must not need vcruntime140.dll (spec §2.9, §5).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
