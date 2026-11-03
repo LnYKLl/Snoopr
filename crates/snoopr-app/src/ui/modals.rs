@@ -5,12 +5,14 @@
 //! and [`next_step`] maps it to a plan, which `app.rs` hands to the session.
 
 use crate::i18n::{
-    Lang, confirm_title, empty_bin_body, failure_reason, format_size, warning_message,
+    Lang, confirm_one_title, confirm_title, empty_bin_body, failure_reason, format_size,
+    warning_message,
 };
 use crate::icons::{Icon, paint_icon};
-use crate::session::Session;
+use crate::session::{Session, Subject};
 use crate::system;
 use crate::theme::{ACCENT, DANGER, LOCK_TEXT, POPUP_BG, TEXT, TEXT_MUTED, WARN_TEXT, bold};
+use crate::ui::node_label;
 use egui::{
     Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Painter, Rect, RichText, Sense, Stroke,
     Ui, pos2, vec2,
@@ -25,8 +27,9 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Modal {
-    ConfirmDelete,
+    ConfirmDelete(Subject),
     TooBig {
+        subject: Subject,
         fit: Vec<NodeId>,
         too_big: Vec<NodeId>,
     },
@@ -56,7 +59,7 @@ pub enum Step {
     Close,
     /// Replace the dialog by this one.
     Open(Modal),
-    Delete(Plan),
+    Delete(Subject, Plan),
     EmptyBin,
 }
 
@@ -78,12 +81,12 @@ pub fn split_for_recycle(
 }
 
 /// Drops empty requests; with nothing left the dialog just closes.
-fn plan(p: Plan) -> Step {
+fn plan(subject: Subject, p: Plan) -> Step {
     let p: Plan = p.into_iter().filter(|(_, ids)| !ids.is_empty()).collect();
     if p.is_empty() {
         Step::Close
     } else {
-        Step::Delete(p)
+        Step::Delete(subject, p)
     }
 }
 
@@ -103,22 +106,36 @@ pub fn next_step(
     match (m, a) {
         (_, A::None) => Step::Stay,
         (_, A::Close) => Step::Close,
-        (Modal::ConfirmDelete, A::Recycle) => {
+        (Modal::ConfirmDelete(subject), A::Recycle) => {
             let (fit, too_big) = split_for_recycle(items, cap());
             if too_big.is_empty() {
-                plan(vec![(RecycleBin, fit)])
+                plan(*subject, vec![(RecycleBin, fit)])
             } else {
-                Step::Open(Modal::TooBig { fit, too_big })
+                Step::Open(Modal::TooBig {
+                    subject: *subject,
+                    fit,
+                    too_big,
+                })
             }
         }
-        (Modal::ConfirmDelete, A::DeletePermanently) => {
-            plan(vec![(Permanent, items.iter().map(|&(id, _)| id).collect())])
+        (Modal::ConfirmDelete(subject), A::DeletePermanently) => plan(
+            *subject,
+            vec![(Permanent, items.iter().map(|&(id, _)| id).collect())],
+        ),
+        (
+            Modal::TooBig {
+                subject,
+                fit,
+                too_big,
+            },
+            A::TooBigDeleteAll,
+        ) => plan(
+            *subject,
+            vec![(RecycleBin, fit.clone()), (Permanent, too_big.clone())],
+        ),
+        (Modal::TooBig { subject, fit, .. }, A::TooBigSkip) => {
+            plan(*subject, vec![(RecycleBin, fit.clone())])
         }
-        (Modal::TooBig { fit, too_big }, A::TooBigDeleteAll) => plan(vec![
-            (RecycleBin, fit.clone()),
-            (Permanent, too_big.clone()),
-        ]),
-        (Modal::TooBig { fit, .. }, A::TooBigSkip) => plan(vec![(RecycleBin, fit.clone())]),
         (Modal::ConfirmEmptyBin, A::EmptyBin) => Step::EmptyBin,
         // A button of another dialog: ignored.
         _ => Step::Stay,
@@ -263,7 +280,7 @@ pub fn show(
     let armed = buttons_armed(open.opened_at, now, open.presses.first_press(), open.delay);
     let m = &open.modal;
     let kind = match m {
-        Modal::ConfirmDelete => "confirm-delete",
+        Modal::ConfirmDelete(_) => "confirm-delete",
         Modal::TooBig { .. } => "too-big",
         Modal::ConfirmEmptyBin => "confirm-empty-bin",
         Modal::Failures(_) => "failures",
@@ -275,8 +292,10 @@ pub fn show(
             ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing.y = 6.0;
             match m {
-                Modal::ConfirmDelete => confirm_delete(ui, s, rules, lang),
-                Modal::TooBig { too_big, .. } => too_big_dialog(ui, s, too_big, lang),
+                Modal::ConfirmDelete(subject) => confirm_delete(ui, s, *subject, rules, lang),
+                Modal::TooBig {
+                    subject, too_big, ..
+                } => too_big_dialog(ui, s, *subject, too_big, lang),
                 Modal::ConfirmEmptyBin => confirm_empty_bin(ui, s, lang),
                 Modal::Failures(f) => failures_dialog(ui, f, lang),
             }
@@ -288,12 +307,25 @@ pub fn show(
     }
 }
 
-fn confirm_delete(ui: &mut Ui, s: &Session, rules: &RuleContext, lang: Lang) -> ModalAction {
+fn confirm_delete(
+    ui: &mut Ui,
+    s: &Session,
+    subject: Subject,
+    rules: &RuleContext,
+    lang: Lang,
+) -> ModalAction {
     let st = lang.s();
-    // Exactly what a confirmation would send: the checked basket items.
-    let items = s.delete_items(s.basket.items());
+    // Exactly what a confirmation would send: the checked items of the subject.
+    let items = s.delete_items(subject, &s.subject_ids(subject));
     let total: u64 = items.iter().map(|it| it.size).sum();
-    title(ui, &confirm_title(lang, items.len()));
+    let heading = match (subject, items.as_slice()) {
+        (Subject::One(_), [only]) => {
+            let tree = s.tree.read().unwrap_or_else(PoisonError::into_inner);
+            confirm_one_title(lang, &node_label(&tree, only.id, lang))
+        }
+        _ => confirm_title(lang, items.len()),
+    };
+    title(ui, &heading);
     ui.label(
         RichText::new(format_size(lang, total))
             .font(bold(13.0))
@@ -342,11 +374,17 @@ fn confirm_delete(ui: &mut Ui, s: &Session, rules: &RuleContext, lang: Lang) -> 
     })
 }
 
-fn too_big_dialog(ui: &mut Ui, s: &Session, too_big: &[NodeId], lang: Lang) -> ModalAction {
+fn too_big_dialog(
+    ui: &mut Ui,
+    s: &Session,
+    subject: Subject,
+    too_big: &[NodeId],
+    lang: Lang,
+) -> ModalAction {
     let st = lang.s();
     title(ui, st.too_big_title);
     body(ui, st.too_big_body);
-    let items = s.delete_items(too_big);
+    let items = s.delete_items(subject, too_big);
     list_box(ui, "too-big-list", |ui| {
         for it in &items {
             path_row(
@@ -611,56 +649,92 @@ mod tests {
     }
 
     #[test]
+    fn the_subject_follows_the_dialogs() {
+        let one = Subject::One(A);
+        assert_eq!(
+            step(
+                &Modal::ConfirmDelete(one),
+                ModalAction::Recycle,
+                RecycleCapacity::MaxBytes(100)
+            ),
+            Step::Open(Modal::TooBig {
+                subject: one,
+                fit: vec![A],
+                too_big: vec![B],
+            })
+        );
+        let m = Modal::TooBig {
+            subject: one,
+            fit: vec![A],
+            too_big: vec![B],
+        };
+        assert_eq!(
+            step(&m, ModalAction::TooBigSkip, RecycleCapacity::Unknown),
+            Step::Delete(one, vec![(RecycleBin, vec![A])])
+        );
+    }
+
+    #[test]
     fn recycle_asks_before_anything_too_big() {
         let s = step(
-            &Modal::ConfirmDelete,
+            &Modal::ConfirmDelete(Subject::Basket),
             ModalAction::Recycle,
             RecycleCapacity::MaxBytes(100),
         );
         assert_eq!(
             s,
             Step::Open(Modal::TooBig {
+                subject: Subject::Basket,
                 fit: vec![A],
                 too_big: vec![B],
             })
         );
         let s = step(
-            &Modal::ConfirmDelete,
+            &Modal::ConfirmDelete(Subject::Basket),
             ModalAction::Recycle,
             RecycleCapacity::Disabled,
         );
         assert_eq!(
             s,
             Step::Open(Modal::TooBig {
+                subject: Subject::Basket,
                 fit: vec![],
                 too_big: vec![A, B],
             })
         );
         let s = step(
-            &Modal::ConfirmDelete,
+            &Modal::ConfirmDelete(Subject::Basket),
             ModalAction::Recycle,
             RecycleCapacity::Unknown,
         );
-        assert_eq!(s, Step::Delete(vec![(RecycleBin, vec![A, B])]));
+        assert_eq!(
+            s,
+            Step::Delete(Subject::Basket, vec![(RecycleBin, vec![A, B])])
+        );
     }
 
     #[test]
     fn too_big_choices() {
         let m = Modal::TooBig {
+            subject: Subject::Basket,
             fit: vec![A],
             too_big: vec![B],
         };
         let cap = RecycleCapacity::Unknown;
         assert_eq!(
             step(&m, ModalAction::TooBigDeleteAll, cap),
-            Step::Delete(vec![(RecycleBin, vec![A]), (Permanent, vec![B])])
+            Step::Delete(
+                Subject::Basket,
+                vec![(RecycleBin, vec![A]), (Permanent, vec![B])]
+            )
         );
         assert_eq!(
             step(&m, ModalAction::TooBigSkip, cap),
-            Step::Delete(vec![(RecycleBin, vec![A])])
+            Step::Delete(Subject::Basket, vec![(RecycleBin, vec![A])])
         );
         assert_eq!(step(&m, ModalAction::Close, cap), Step::Close);
         let nothing_fits = Modal::TooBig {
+            subject: Subject::Basket,
             fit: vec![],
             too_big: vec![A, B],
         };
@@ -670,7 +744,7 @@ mod tests {
         );
         assert_eq!(
             step(&nothing_fits, ModalAction::TooBigDeleteAll, cap),
-            Step::Delete(vec![(Permanent, vec![A, B])])
+            Step::Delete(Subject::Basket, vec![(Permanent, vec![A, B])])
         );
     }
 
@@ -678,21 +752,29 @@ mod tests {
     fn permanent_and_empty_bin() {
         let cap = RecycleCapacity::Unknown;
         assert_eq!(
-            step(&Modal::ConfirmDelete, ModalAction::DeletePermanently, cap),
-            Step::Delete(vec![(Permanent, vec![A, B])])
+            step(
+                &Modal::ConfirmDelete(Subject::Basket),
+                ModalAction::DeletePermanently,
+                cap
+            ),
+            Step::Delete(Subject::Basket, vec![(Permanent, vec![A, B])])
         );
         assert_eq!(
             step(&Modal::ConfirmEmptyBin, ModalAction::EmptyBin, cap),
             Step::EmptyBin
         );
         assert_eq!(
-            step(&Modal::ConfirmDelete, ModalAction::None, cap),
+            step(
+                &Modal::ConfirmDelete(Subject::Basket),
+                ModalAction::None,
+                cap
+            ),
             Step::Stay
         );
         let nothing: [(NodeId, u64); 0] = [];
         assert_eq!(
             next_step(
-                &Modal::ConfirmDelete,
+                &Modal::ConfirmDelete(Subject::Basket),
                 ModalAction::DeletePermanently,
                 &nothing,
                 || cap
@@ -709,6 +791,7 @@ mod tests {
             reason: FailureReason::InUse,
         }]);
         let too_big = Modal::TooBig {
+            subject: Subject::Basket,
             fit: vec![A],
             too_big: vec![B],
         };
@@ -724,13 +807,15 @@ mod tests {
         let allowed = |m: &Modal, a: ModalAction| {
             matches!(
                 (m, a),
-                (Modal::ConfirmDelete, A::Recycle | A::DeletePermanently)
-                    | (Modal::TooBig { .. }, A::TooBigDeleteAll | A::TooBigSkip)
+                (
+                    Modal::ConfirmDelete(Subject::Basket),
+                    A::Recycle | A::DeletePermanently
+                ) | (Modal::TooBig { .. }, A::TooBigDeleteAll | A::TooBigSkip)
                     | (Modal::ConfirmEmptyBin, A::EmptyBin)
             )
         };
         for m in [
-            Modal::ConfirmDelete,
+            Modal::ConfirmDelete(Subject::Basket),
             too_big,
             Modal::ConfirmEmptyBin,
             failures,
@@ -742,12 +827,12 @@ mod tests {
                     RecycleCapacity::MaxBytes(100),
                 ] {
                     let s = step(&m, a, cap);
-                    if matches!(s, Step::Delete(_) | Step::EmptyBin) {
+                    if matches!(s, Step::Delete(..) | Step::EmptyBin) {
                         assert!(allowed(&m, a), "{m:?} + {a:?} gave {s:?}");
                     }
                     // Choosing the Recycle Bin never plans a permanent deletion.
                     if a == A::Recycle
-                        && let Step::Delete(plan) = &s
+                        && let Step::Delete(_, plan) = &s
                     {
                         assert!(plan.iter().all(|(mode, _)| *mode == RecycleBin));
                     }

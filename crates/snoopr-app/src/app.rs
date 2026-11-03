@@ -1,7 +1,7 @@
 //! Application shell: owns the session and picks the screen to draw.
 
 use crate::i18n::Lang;
-use crate::session::{Session, can_start_delete};
+use crate::session::{Session, Subject, can_start_delete};
 use crate::system;
 use crate::theme;
 use crate::treemap::{self, CachedLayout};
@@ -114,11 +114,12 @@ impl SnooprApp {
     }
 
     /// Opens the deletion confirmation (spec §7.1) when a deletion may start.
-    fn request_delete(&mut self, ctx: &egui::Context) {
+    fn request_delete(&mut self, ctx: &egui::Context, subject: Subject) {
         let Some(s) = &self.session else { return };
-        if self.modal.is_none() && can_start_delete(s.is_busy(), s.basket.len()) {
+        let n = s.delete_items(subject, &s.subject_ids(subject)).len();
+        if self.modal.is_none() && can_start_delete(s.is_busy(), n) {
             egui::Popup::close_all(ctx);
-            self.modal = Some(OpenModal::new(Modal::ConfirmDelete));
+            self.modal = Some(OpenModal::new(Modal::ConfirmDelete(subject)));
         }
     }
 
@@ -142,8 +143,12 @@ impl SnooprApp {
             return;
         };
         let m = &open.modal;
+        let subject = match m {
+            Modal::ConfirmDelete(subject) | Modal::TooBig { subject, .. } => *subject,
+            _ => Subject::Basket,
+        };
         let items: Vec<(NodeId, u64)> = s
-            .delete_items(s.basket.items())
+            .delete_items(subject, &s.subject_ids(subject))
             .iter()
             .map(|it| (it.id, it.size))
             .collect();
@@ -153,16 +158,16 @@ impl SnooprApp {
             Step::Close => self.modal = None,
             // A new dialog: its buttons wait again (no double-click carry-over).
             Step::Open(next) => self.modal = Some(OpenModal::new(next)),
-            Step::Delete(plan) => {
+            Step::Delete(subject, plan) => {
                 self.modal = None;
                 let requests = plan
                     .into_iter()
                     .map(|(mode, ids)| DeleteRequest {
-                        items: s.delete_items(&ids),
+                        items: s.delete_items(subject, &ids),
                         mode,
                     })
                     .collect();
-                s.start_delete(requests);
+                s.start_delete(subject, requests);
             }
             Step::EmptyBin => {
                 self.modal = None;
@@ -266,7 +271,7 @@ impl SnooprApp {
                     s.basket.remove(id);
                 }
             }
-            TopBarAction::RequestDelete => self.request_delete(ctx),
+            TopBarAction::RequestDelete => self.request_delete(ctx, Subject::Basket),
         }
     }
 

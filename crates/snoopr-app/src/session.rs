@@ -16,6 +16,7 @@ use snoopr_core::rules::RuleContext;
 use snoopr_core::scan::{ScanHandle, start_scan};
 use snoopr_core::tree::{EntryData, NodeId, NodeKind, SharedTree, Tree};
 use snoopr_core::volume::{canonical_target, update_unscanned, volume_root_of, volume_usage};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -34,6 +35,27 @@ pub struct View {
 /// A deletion can start only when nothing else runs and the basket holds something.
 pub fn can_start_delete(busy: bool, basket_len: usize) -> bool {
     !busy && basket_len > 0
+}
+
+/// What a deletion is about: the whole basket, or one item that never enters it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Basket,
+    // Built by the context menu (next task); remove this expectation then.
+    #[cfg_attr(not(test), expect(dead_code))]
+    One(NodeId),
+}
+
+/// The basket a deletion of `subject` is checked against: the real one, or one holding only the item.
+pub fn subject_basket<'a>(tree: &Tree, basket: &'a Basket, subject: Subject) -> Cow<'a, Basket> {
+    match subject {
+        Subject::Basket => Cow::Borrowed(basket),
+        Subject::One(id) => {
+            let mut one = Basket::default();
+            one.add(tree, id);
+            Cow::Owned(one)
+        }
+    }
 }
 
 /// Outcomes of each request of a job, in request order.
@@ -274,43 +296,60 @@ impl Session {
         self.delete.is_some() || self.empty_job.is_some()
     }
 
-    /// The deletable items among `ids` (see [`build_items`]): path and size from the tree.
-    pub fn delete_items(&self, ids: &[NodeId]) -> Vec<DeleteItem> {
+    /// The ids a deletion of `subject` is about: the basket items, or the item itself.
+    pub fn subject_ids(&self, subject: Subject) -> Vec<NodeId> {
+        match subject {
+            Subject::Basket => self.basket.items().to_vec(),
+            Subject::One(id) => vec![id],
+        }
+    }
+
+    /// The deletable items among `ids` for `subject` (see [`build_items`]): path and size from the tree.
+    pub fn delete_items(&self, subject: Subject, ids: &[NodeId]) -> Vec<DeleteItem> {
         let tree = self.tree.read().unwrap_or_else(PoisonError::into_inner);
-        build_items(&tree, &self.basket, &self.rules, ids)
+        let basket = subject_basket(&tree, &self.basket, subject);
+        build_items(&tree, &basket, &self.rules, ids)
+    }
+
+    /// Checks every item of `requests` again against the tree, the safety rules
+    /// and the basket of `subject`; its path is read from the tree, never taken
+    /// from the caller. Anything else is dropped, and an id only runs once.
+    fn checked_requests(
+        &self,
+        subject: Subject,
+        requests: Vec<DeleteRequest>,
+    ) -> Vec<DeleteRequest> {
+        let tree = self.tree.read().unwrap_or_else(PoisonError::into_inner);
+        let basket = subject_basket(&tree, &self.basket, subject);
+        let mut seen: Vec<NodeId> = Vec::new();
+        let mut out = Vec::new();
+        for r in requests {
+            let ids: Vec<NodeId> = r
+                .items
+                .iter()
+                .map(|it| it.id)
+                .filter(|id| !seen.contains(id))
+                .collect();
+            let items = build_items(&tree, &basket, &self.rules, &ids);
+            seen.extend(items.iter().map(|it| it.id));
+            if !items.is_empty() {
+                out.push(DeleteRequest {
+                    items,
+                    mode: r.mode,
+                });
+            }
+        }
+        out
     }
 
     /// Starts deleting on a worker thread; the requests run in order. Every
-    /// item is checked again here against the tree, the basket and the safety
-    /// rules, and its path is read from the tree, never taken from the caller:
-    /// anything else is dropped, and an id only runs once. Does nothing while
-    /// busy or when no item is left.
-    pub fn start_delete(&mut self, requests: Vec<DeleteRequest>) {
+    /// item is checked again here (see [`Session::checked_requests`]). Does
+    /// nothing while busy or when no item is left.
+    pub fn start_delete(&mut self, subject: Subject, requests: Vec<DeleteRequest>) {
         if self.is_busy() {
             return;
         }
-        let requests: Vec<DeleteRequest> = {
-            let tree = self.tree.read().unwrap_or_else(PoisonError::into_inner);
-            let mut seen: Vec<NodeId> = Vec::new();
-            let mut out = Vec::new();
-            for r in requests {
-                let ids: Vec<NodeId> = r
-                    .items
-                    .iter()
-                    .map(|it| it.id)
-                    .filter(|id| !seen.contains(id))
-                    .collect();
-                let items = build_items(&tree, &self.basket, &self.rules, &ids);
-                seen.extend(items.iter().map(|it| it.id));
-                if !items.is_empty() {
-                    out.push(DeleteRequest {
-                        items,
-                        mode: r.mode,
-                    });
-                }
-            }
-            out
-        };
+        let requests = self.checked_requests(subject, requests);
         if requests.is_empty() {
             return;
         }
@@ -748,6 +787,130 @@ mod tests {
         assert!(build_items(&t, &only_bin, &rules, &[bin]).is_empty());
     }
 
+    struct OneFixture {
+        s: Session,
+        root: NodeId,
+        movie: NodeId,
+        b: NodeId,
+        windows: NodeId,
+        bin: NodeId,
+        old: NodeId,
+        unscanned: NodeId,
+    }
+
+    fn one_fixture() -> OneFixture {
+        let mut t = Tree::new(PathBuf::from(r"C:\"), 0);
+        let root = t.root();
+        let top = t.add_children(
+            root,
+            vec![
+                sized("Data", NodeKind::Dir, 0),
+                sized("Windows", NodeKind::Dir, 0),
+                sized("$Recycle.Bin", NodeKind::Dir, 0),
+            ],
+        );
+        let (data, windows, bin) = (top[0], top[1], top[2]);
+        let files = t.add_children(
+            data,
+            vec![
+                sized("movie.mkv", NodeKind::File, 100),
+                sized("b.zip", NodeKind::File, 50),
+            ],
+        );
+        t.add_children(windows, vec![sized("w.dll", NodeKind::File, 10)]);
+        let old = t.add_children(bin, vec![sized("old.zip", NodeKind::File, 5)])[0];
+        t.set_unscanned(7);
+        let unscanned = t
+            .node(root)
+            .children
+            .iter()
+            .copied()
+            .find(|&c| t.node(c).kind == NodeKind::Unscanned)
+            .unwrap();
+        OneFixture {
+            s: Session::from_tree(t),
+            root,
+            movie: files[0],
+            b: files[1],
+            windows,
+            bin,
+            old,
+            unscanned,
+        }
+    }
+
+    fn add_to_basket(s: &mut Session, ids: &[NodeId]) {
+        let tree = s.tree.clone();
+        let tree = tree.read().unwrap();
+        for &id in ids {
+            s.basket.add(&tree, id);
+        }
+    }
+
+    fn ids(items: Vec<DeleteItem>) -> Vec<NodeId> {
+        items.into_iter().map(|it| it.id).collect()
+    }
+
+    /// One request per id; the caller's path and size are placeholders.
+    fn requests_for(ids: &[NodeId]) -> Vec<DeleteRequest> {
+        ids.iter()
+            .map(|&id| DeleteRequest {
+                items: vec![DeleteItem {
+                    id,
+                    path: PathBuf::new(),
+                    size: 0,
+                }],
+                mode: DeleteMode::Permanent,
+            })
+            .collect()
+    }
+
+    fn request_ids(reqs: &[DeleteRequest]) -> Vec<NodeId> {
+        reqs.iter()
+            .flat_map(|r| r.items.iter().map(|it| it.id))
+            .collect()
+    }
+
+    #[test]
+    fn delete_items_for_one_checks_like_a_one_item_basket() {
+        let f = one_fixture();
+        let s = &f.s;
+        assert_eq!(
+            ids(s.delete_items(Subject::One(f.movie), &[f.movie])),
+            vec![f.movie]
+        );
+        for id in [f.windows, f.root, f.bin, f.old, f.unscanned] {
+            assert!(s.delete_items(Subject::One(id), &[id]).is_empty(), "{id:?}");
+        }
+        // An id other than the subject is never kept.
+        assert!(s.delete_items(Subject::One(f.movie), &[f.b]).is_empty());
+        assert!(s.basket.is_empty());
+    }
+
+    #[test]
+    fn checked_requests_one_keeps_only_the_subject() {
+        let mut f = one_fixture();
+        add_to_basket(&mut f.s, &[f.movie, f.b]);
+        let s = &f.s;
+        let both = [f.movie, f.b];
+        let out = s.checked_requests(Subject::One(f.movie), requests_for(&both));
+        assert_eq!(request_ids(&out), vec![f.movie]);
+        assert_eq!(s.basket.items(), &[f.movie, f.b]);
+        let out = s.checked_requests(Subject::Basket, requests_for(&both));
+        assert_eq!(request_ids(&out), vec![f.movie, f.b]);
+    }
+
+    #[test]
+    fn subject_ids_lists_what_the_dialog_shows() {
+        let mut f = one_fixture();
+        add_to_basket(&mut f.s, &[f.movie, f.b]);
+        assert_eq!(f.s.subject_ids(Subject::One(f.b)), vec![f.b]);
+        assert_eq!(
+            f.s.subject_ids(Subject::Basket),
+            f.s.basket.items().to_vec()
+        );
+    }
+
     #[derive(Default)]
     struct FakeDeleter {
         calls: std::sync::Mutex<Vec<(DeleteMode, PathBuf)>>,
@@ -887,24 +1050,30 @@ mod tests {
         let d = t.add_children(root, vec![sized("d", NodeKind::Dir, 0)])[0];
         let mut s = Session::from_tree(t);
         // The root, even with a forged item, never reaches a worker.
-        s.start_delete(vec![DeleteRequest {
-            items: vec![DeleteItem {
-                id: root,
-                path: PathBuf::from(NOWHERE),
-                size: 0,
+        s.start_delete(
+            Subject::Basket,
+            vec![DeleteRequest {
+                items: vec![DeleteItem {
+                    id: root,
+                    path: PathBuf::from(NOWHERE),
+                    size: 0,
+                }],
+                mode: DeleteMode::Permanent,
             }],
-            mode: DeleteMode::Permanent,
-        }]);
+        );
         assert!(s.delete.is_none());
         // Nor does an item that is not in the basket.
-        s.start_delete(vec![DeleteRequest {
-            items: vec![DeleteItem {
-                id: d,
-                path: PathBuf::from(NOWHERE).join("d"),
-                size: 0,
+        s.start_delete(
+            Subject::Basket,
+            vec![DeleteRequest {
+                items: vec![DeleteItem {
+                    id: d,
+                    path: PathBuf::from(NOWHERE).join("d"),
+                    size: 0,
+                }],
+                mode: DeleteMode::Permanent,
             }],
-            mode: DeleteMode::Permanent,
-        }]);
+        );
         assert!(s.delete.is_none());
         // Nothing starts while a rescan runs.
         {
@@ -917,12 +1086,15 @@ mod tests {
             old_size: 0,
         });
         assert!(s.is_busy());
-        let items = s.delete_items(&[d]);
+        let items = s.delete_items(Subject::Basket, &[d]);
         assert_eq!(items.len(), 1);
-        s.start_delete(vec![DeleteRequest {
-            items,
-            mode: DeleteMode::Permanent,
-        }]);
+        s.start_delete(
+            Subject::Basket,
+            vec![DeleteRequest {
+                items,
+                mode: DeleteMode::Permanent,
+            }],
+        );
         assert!(s.delete.is_none());
         wait_idle(&mut s);
     }
@@ -1009,12 +1181,15 @@ mod tests {
             (r, big, locked, t.node(big).size, t.node(locked).size)
         };
         assert!(big_size > 0);
-        let items = s.delete_items(&[big, locked]);
+        let items = s.delete_items(Subject::Basket, &[big, locked]);
         assert_eq!(items.len(), 2);
-        s.start_delete(vec![DeleteRequest {
-            items,
-            mode: DeleteMode::Permanent,
-        }]);
+        s.start_delete(
+            Subject::Basket,
+            vec![DeleteRequest {
+                items,
+                mode: DeleteMode::Permanent,
+            }],
+        );
         assert!(s.delete.is_some() && s.is_busy());
         wait_idle(&mut s);
         assert!(!dir.join("big").exists());

@@ -296,6 +296,15 @@ pub fn confirm_title(l: Lang, n: usize) -> String {
     }
 }
 
+/// Title of the confirmation for a single named item.
+pub fn confirm_one_title(l: Lang, name: &str) -> String {
+    if is_fr(l) {
+        format!("Supprimer «\u{a0}{name}\u{a0}»\u{a0}?")
+    } else {
+        format!("Delete “{name}”?")
+    }
+}
+
 pub fn used_of(l: Lang, used: u64, total: u64) -> String {
     let (u, t) = (format_size(l, used), format_size(l, total));
     if is_fr(l) {
@@ -623,6 +632,11 @@ mod tests {
         assert_eq!(items_count(Lang::Fr, 1), "1 élément");
         assert_eq!(small_files(Lang::En, 37), "37 small files");
         assert_eq!(confirm_title(Lang::Fr, 2), "Supprimer 2 éléments ?");
+        assert_eq!(
+            confirm_one_title(Lang::Fr, "Videos"),
+            "Supprimer «\u{a0}Videos\u{a0}»\u{a0}?"
+        );
+        assert_eq!(confirm_one_title(Lang::En, "Videos"), "Delete “Videos”?");
         assert_eq!(
             delete_button(Lang::En, 2, 80 << 30),
             "Delete 2 items · 80 GB"
