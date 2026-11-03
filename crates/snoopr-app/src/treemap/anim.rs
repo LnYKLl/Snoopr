@@ -86,16 +86,16 @@ pub enum Change {
     ZoomOut { focus_new: Rect },
 }
 
-/// Rectangle in `l` of `id` or of its deepest placed ancestor below `stop`.
-/// The view root itself is never placed.
-fn focus(tree: &Tree, l: &CachedLayout, id: NodeId, stop: NodeId) -> Option<Rect> {
+/// `id` or its deepest ancestor below `stop` placed in `l`, with its
+/// rectangle there. The view root itself is never placed.
+fn focus(tree: &Tree, l: &CachedLayout, id: NodeId, stop: NodeId) -> Option<(NodeId, Rect)> {
     std::iter::successors(Some(id), |&n| tree.node(n).parent)
         .take_while(|&n| n != stop)
         .find_map(|n| {
             l.items
                 .iter()
                 .find(|it| it.placed.item == Item::Node(n))
-                .map(|it| it.placed.rect)
+                .map(|it| (n, it.placed.rect))
         })
 }
 
@@ -112,15 +112,16 @@ pub fn classify_change(
         return Change::Snap;
     }
     let (from, to) = (old.key.view_root, new.key.view_root);
+    let rect = |f: Option<(NodeId, Rect)>| f.map_or(area, |(_, r)| r);
     if from == to {
         Change::Reflow
     } else if tree.is_ancestor(from, to) {
         Change::ZoomIn {
-            focus_old: focus(tree, old, to, from).unwrap_or(area),
+            focus_old: rect(focus(tree, old, to, from)),
         }
     } else if tree.is_ancestor(to, from) {
         Change::ZoomOut {
-            focus_new: focus(tree, new, from, to).unwrap_or(area),
+            focus_new: rect(focus(tree, new, from, to)),
         }
     } else {
         Change::Appear
@@ -235,7 +236,7 @@ impl Animator {
         if !self.enabled || new.items.len() > MAX_ANIMATED {
             return;
         }
-        let change = classify_change(tree, old, new, area);
+        let mut change = classify_change(tree, old, new, area);
         let (duration, ease): (Duration, fn(f32) -> f32) = match change {
             Change::Snap => return,
             Change::Reflow => (REFLOW, ease_out_cubic),
@@ -261,6 +262,13 @@ impl Animator {
             Some(tr) => tr.shown(key, rect, now),
             None => Shown { rect, alpha: 1.0 },
         };
+        // A zoom in starts from the folder as drawn now, even mid-reflow. Out,
+        // the focus is in `new`, which is drawn as laid out.
+        if let (Change::ZoomIn { focus_old }, Some(old)) = (&mut change, old)
+            && let Some((id, rect)) = focus(tree, old, new.key.view_root, old.key.view_root)
+        {
+            *focus_old = depart(AnimKey::Node(id), rect).rect;
+        }
         let old_items = old.map_or(&[][..], |o| &o.items[..]);
         let from = if change == Change::Reflow {
             let targets: HashMap<AnimKey, Rect> = new
@@ -269,7 +277,8 @@ impl Animator {
                 .map(|it| (AnimKey::of(&it.placed.item), it.placed.rect))
                 .collect();
             let mut from = HashMap::with_capacity(new.items.len());
-            let mut moved = !ghosts.is_empty();
+            // Kept blocks that move and new blocks; ghosts are checked below.
+            let mut moved = false;
             for it in old_items {
                 let key = AnimKey::of(&it.placed.item);
                 let start = depart(key, it.placed.rect);
@@ -296,7 +305,7 @@ impl Animator {
                     }
                 });
             }
-            if !moved {
+            if !moved && ghosts.is_empty() {
                 return;
             }
             from
@@ -806,6 +815,65 @@ mod tests {
             t0,
         );
         assert!(!anim.is_animating(t0));
+
+        // Nothing else moves, but a block vanishes: its ghost still fades out.
+        let u = r(0., 0., 400., 600.);
+        let b = r(400., 0., 400., 600.);
+        let old = lay(ids.root, SIZE, vec![node(ids.users, u), node(ids.bin, b)]);
+        let new = lay(ids.root, SIZE, vec![node(ids.users, u)]);
+        anim.on_rebuild(&t, Some(&old), &new, AREA, t0);
+        assert!(anim.is_animating(t0));
+        assert_eq!(
+            ghost_of(&anim, &Item::Node(ids.bin), t0),
+            Some(Shown {
+                rect: b,
+                alpha: 1.0
+            })
+        );
+    }
+
+    #[test]
+    fn zoom_in_mid_reflow_starts_from_the_drawn_folder() {
+        let (t, ids) = tree();
+        let (u1, al1) = (r(0., 0., 400., 600.), r(3., 19., 394., 578.));
+        let (u2, al2) = (r(0., 0., 800., 600.), r(3., 19., 794., 578.));
+        let l1 = lay(
+            ids.root,
+            SIZE,
+            vec![node(ids.users, u1), node(ids.alice, al1)],
+        );
+        let l2 = lay(
+            ids.root,
+            SIZE,
+            vec![node(ids.users, u2), node(ids.alice, al2)],
+        );
+        let mut anim = Animator::new(true);
+        let t0 = Instant::now();
+        anim.on_rebuild(&t, Some(&l1), &l2, AREA, t0);
+
+        let t1 = t0 + Duration::from_millis(100);
+        let drawn = anim.shown(AnimKey::Node(ids.alice), al2, t1).rect;
+        assert!(!near(drawn, al2), "alice is still moving");
+        let before_u = anim.shown(AnimKey::Node(ids.users), u2, t1);
+        let a3 = r(0., 0., 500., 600.);
+        let l3 = lay(ids.alice, SIZE, vec![node(ids.a, a3)]);
+        anim.on_rebuild(&t, Some(&l2), &l3, AREA, t1);
+
+        // The new treemap starts inside alice as drawn, not as laid out…
+        assert_close(
+            anim.shown(AnimKey::Node(ids.a), a3, t1),
+            Shown {
+                rect: map_rect(a3, AREA, drawn),
+                alpha: 0.0,
+            },
+        );
+        // …and the old one leaves in step with it, from where it is drawn.
+        let gu = ghost_of(&anim, &Item::Node(ids.users), t1).expect("fading");
+        assert_close(gu, before_u);
+        let late = t1 + ZOOM - Duration::from_millis(2);
+        let gu = ghost_of(&anim, &Item::Node(ids.users), late).expect("fading");
+        let out = map_rect(before_u.rect, drawn, AREA);
+        assert!(near_eps(gu.rect, out, 1e-1), "{gu:?} vs {out:?}");
     }
 
     #[test]
