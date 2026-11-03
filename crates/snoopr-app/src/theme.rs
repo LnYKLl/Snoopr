@@ -10,11 +10,9 @@ pub const TEXT: Color32 = Color32::from_rgb(0xe8, 0xe9, 0xee);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8b, 0x8d, 0x98);
 pub const ACCENT: Color32 = Color32::from_rgb(0x3b, 0x6f, 0xe0);
 pub const AMBER: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
-#[allow(dead_code)] // delete buttons (Tasks 14-15)
 pub const DANGER: Color32 = Color32::from_rgb(0xc2, 0x36, 0x4a);
 pub const LOCK_TEXT: Color32 = Color32::from_rgb(0xf3, 0xb4, 0xb4);
 pub const WARN_TEXT: Color32 = Color32::from_rgb(0xf3, 0xd7, 0x9a);
-#[allow(dead_code)] // "freed" text of the status bar (Task 14)
 pub const OK_TEXT: Color32 = Color32::from_rgb(0x6e, 0xe7, 0xa8);
 
 pub const HUES: [f32; 8] = [212., 335., 168., 28., 265., 45., 190., 300.];

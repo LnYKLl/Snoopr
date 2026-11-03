@@ -28,7 +28,6 @@ pub struct Session {
     pub view: View,
     pub basket: Basket,
     pub bin_bytes: u64,
-    #[allow(dead_code)] // shown by the status bar (Task 14)
     pub freed: u64,
     pub usage: (u64, u64),
     /// Disk size read once at start, for percentages while `usage` is unknown.
@@ -125,7 +124,6 @@ impl Session {
         }
     }
 
-    #[allow(dead_code)] // the Up button and Backspace (Task 14)
     pub fn up(&mut self) {
         let parent = self
             .tree

@@ -1,11 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-// Status bar, basket and deletion texts are consumed by Tasks 14-15.
+// Deletion and modal texts are consumed by Task 15.
 #[allow(dead_code)]
 mod i18n;
 mod icons;
 mod session;
+mod system;
 mod theme;
 mod treemap;
 mod ui;

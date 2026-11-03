@@ -2,7 +2,6 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke, pos2};
 
-#[allow(dead_code)] // the toolbar (Task 14) draws them
 #[derive(Clone, Copy)]
 pub enum Icon {
     Drive,
@@ -14,6 +13,7 @@ pub enum Icon {
     Plus,
     Minus,
     Trash,
+    #[allow(dead_code)] // the bars draw their own drop-down chevron
     Chevron,
     Lock,
     Warn,
