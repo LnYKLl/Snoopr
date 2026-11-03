@@ -2,7 +2,7 @@
 //! files and closed folders as solid blocks in their type's colour, hover,
 //! selection and basket outlines, and the hover tooltip.
 
-use super::anim::{AnimKey, Shown, TreemapAnim};
+use super::anim::{AnimKey, Layer, Shown, TreemapAnim};
 use super::model::{
     CachedItem, CachedLayout, LabelMode, LayoutKey, build_layout, hit_test, label_mode,
     needs_rebuild,
@@ -466,11 +466,17 @@ pub fn show(
             }
         }
     };
-    if moving {
-        for (it, sh) in anim.layout.ghosts(now) {
+    let ghosts = if moving {
+        anim.layout.ghosts(now)
+    } else {
+        Vec::new()
+    };
+    let paint_ghosts = |layer: Layer| {
+        for (it, sh, _) in ghosts.iter().filter(|g| g.2 == layer) {
             paint_block(&painter, it, to_screen(origin, sh.rect), 0.0, sh.alpha, &cx);
         }
-    }
+    };
+    paint_ghosts(Layer::Under);
     let mut selected = None;
     let mut basket = Vec::new();
     for it in items {
@@ -486,6 +492,7 @@ pub fn show(
             }
         }
     }
+    paint_ghosts(Layer::Over);
     // Outlines last, so nothing covers them.
     for (r, alpha) in basket {
         dashed_outline(&painter, r, AMBER.gamma_multiply(alpha));

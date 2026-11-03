@@ -158,11 +158,24 @@ impl Clock {
     }
 }
 
+/// Where a ghost is drawn against the live blocks, which are opaque and tile
+/// the area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Before the live blocks: the old treemap of a zoom or a cross-fade.
+    Under,
+    /// After the live blocks, before the outlines: a block leaving in a reflow,
+    /// which flies over its neighbours.
+    Over,
+}
+
 /// A block of the previous layout, drawn while it fades out.
 struct Ghost {
     item: CachedItem,
     from: Shown,
     to: Shown,
+    /// Set by the change that made the ghost; a carried ghost keeps it.
+    layer: Layer,
 }
 
 struct Transition {
@@ -255,6 +268,7 @@ impl Animator {
                 (from.alpha > 0.0).then_some(Ghost { from, ..g })
             }));
         }
+        let carried = ghosts.len();
         let budget = MAX_ANIMATED - new.items.len();
         if ghosts.len() > budget {
             return;
@@ -293,10 +307,34 @@ impl Animator {
                     item: it.clone(),
                     from: start,
                     to: reflow_exit(tree, key, start.rect, &targets),
+                    layer: Layer::Over,
                 });
                 if ghosts.len() > budget {
                     return;
                 }
+            }
+            // A key that comes back while its ghost still fades starts from
+            // where that ghost is drawn (its latest one, if several), and the
+            // ghost goes: the block is never drawn twice.
+            if carried > 0 {
+                let latest: HashMap<AnimKey, usize> = ghosts[..carried]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| (AnimKey::of(&g.item.placed.item), i))
+                    .collect();
+                let mut i = 0;
+                ghosts.retain(|g| {
+                    let key = AnimKey::of(&g.item.placed.item);
+                    let back = latest.get(&key) == Some(&i)
+                        && targets.contains_key(&key)
+                        && !from.contains_key(&key);
+                    i += 1;
+                    if back {
+                        moved = true;
+                        from.insert(key, g.from);
+                    }
+                    !back
+                });
             }
             for it in &new.items {
                 from.entry(AnimKey::of(&it.placed.item)).or_insert_with(|| {
@@ -332,6 +370,7 @@ impl Animator {
                         rect: warp(start.rect, exit),
                         alpha: 0.0,
                     },
+                    layer: Layer::Under,
                 });
             }
             new.items
@@ -366,8 +405,8 @@ impl Animator {
         }
     }
 
-    /// Vanished blocks still visible at `now`, in drawing order.
-    pub fn ghosts(&self, now: Instant) -> Vec<(&CachedItem, Shown)> {
+    /// Vanished blocks still visible at `now`, in drawing order within each layer.
+    pub fn ghosts(&self, now: Instant) -> Vec<(&CachedItem, Shown, Layer)> {
         let Some(tr) = &self.transition else {
             return Vec::new();
         };
@@ -376,8 +415,8 @@ impl Animator {
         };
         tr.ghosts
             .iter()
-            .map(|g| (&g.item, mix(g.from, g.to, t)))
-            .filter(|(_, s)| s.alpha > 0.0)
+            .map(|g| (&g.item, mix(g.from, g.to, t), g.layer))
+            .filter(|(_, s, _)| s.alpha > 0.0)
             .collect()
     }
 
@@ -662,8 +701,8 @@ mod tests {
     fn ghost_of(anim: &Animator, item: &Item, now: Instant) -> Option<Shown> {
         anim.ghosts(now)
             .into_iter()
-            .find(|(it, _)| it.placed.item == *item)
-            .map(|(_, s)| s)
+            .find(|(it, _, _)| it.placed.item == *item)
+            .map(|(_, s, _)| s)
     }
 
     #[test]
@@ -1294,6 +1333,96 @@ mod tests {
             }
         );
         assert!(anim.ghosts(end).is_empty());
+    }
+
+    #[test]
+    fn reflow_ghosts_fly_over_the_blocks_and_zoom_ghosts_stay_under() {
+        let (t, ids) = tree();
+        let (u, al, w) = (
+            r(0., 0., 600., 600.),
+            r(3., 19., 594., 578.),
+            r(600., 0., 200., 600.),
+        );
+        let root_view = lay(
+            ids.root,
+            SIZE,
+            vec![
+                node(ids.users, u),
+                node(ids.alice, al),
+                node(ids.windows, w),
+            ],
+        );
+        let no_windows = lay(
+            ids.root,
+            SIZE,
+            vec![node(ids.users, AREA), node(ids.alice, al)],
+        );
+        let alice_view = lay(ids.alice, SIZE, vec![node(ids.a, r(0., 0., 500., 600.))]);
+        let users_view = lay(ids.users, SIZE, vec![node(ids.alice, AREA)]);
+        let windows_view = lay(ids.windows, SIZE, vec![node(ids.dll, AREA)]);
+        let layers = |anim: &Animator, now| {
+            anim.ghosts(now)
+                .into_iter()
+                .map(|(_, _, layer)| layer)
+                .collect::<Vec<_>>()
+        };
+        let t0 = Instant::now();
+        let mut anim = Animator::new(true);
+
+        // A reflow: the block that leaves flies over its neighbours.
+        anim.on_rebuild(&t, Some(&root_view), &no_windows, AREA, t0);
+        assert_eq!(layers(&anim, t0), [Layer::Over]);
+        // A zoom mid-reflow: the old treemap goes under, the carried ghost
+        // stays over.
+        let t1 = t0 + Duration::from_millis(100);
+        anim.on_rebuild(&t, Some(&no_windows), &alice_view, AREA, t1);
+        assert_eq!(layers(&anim, t1), [Layer::Over, Layer::Under, Layer::Under]);
+
+        // Zoom in, zoom out and a cross-fade: under the new blocks.
+        for (old, new) in [
+            (&root_view, &alice_view),
+            (&alice_view, &root_view),
+            (&users_view, &windows_view),
+        ] {
+            anim.reset();
+            anim.on_rebuild(&t, Some(old), new, AREA, t0);
+            let got = layers(&anim, t0);
+            assert!(
+                !got.is_empty() && got.iter().all(|&l| l == Layer::Under),
+                "{got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fading_key_that_comes_back_starts_from_its_ghost() {
+        let (t, ids) = tree();
+        let (u1, b1) = (r(0., 0., 400., 600.), r(400., 0., 400., 600.));
+        let l1 = lay(ids.root, SIZE, vec![node(ids.users, u1), node(ids.bin, b1)]);
+        let l2 = lay(ids.root, SIZE, vec![node(ids.users, AREA)]);
+        let (u3, b3) = (r(0., 0., 600., 600.), r(600., 0., 200., 600.));
+        let l3 = lay(ids.root, SIZE, vec![node(ids.users, u3), node(ids.bin, b3)]);
+        let mut anim = Animator::new(true);
+        let t0 = Instant::now();
+        anim.on_rebuild(&t, Some(&l1), &l2, AREA, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        let bin = Item::Node(ids.bin);
+        let ghost = ghost_of(&anim, &bin, t1).expect("bin is fading");
+        assert!(ghost.alpha > 0.0 && ghost.alpha < 1.0);
+
+        anim.on_rebuild(&t, Some(&l2), &l3, AREA, t1);
+        // Drawn once: the ghost is gone and the block starts where it was drawn.
+        assert_eq!(ghost_of(&anim, &bin, t1), None);
+        assert!(anim.ghosts(t1).is_empty());
+        let key = AnimKey::Node(ids.bin);
+        assert_close(anim.shown(key, b3, t1), ghost);
+        assert_eq!(
+            anim.shown(key, b3, t1 + REFLOW),
+            Shown {
+                rect: b3,
+                alpha: 1.0
+            }
+        );
     }
 
     #[test]
