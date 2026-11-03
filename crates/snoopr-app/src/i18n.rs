@@ -199,6 +199,11 @@ pub fn format_size(l: Lang, bytes: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
+    // Rounded for display, 1023.6 Mo would read "1024 Mo": that is 1,0 Go.
+    if v.round() >= 1024.0 && u < units.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
     let rounded = (v * 10.0).round() / 10.0;
     let num = if u > 0 && rounded < 10.0 {
         decimal(l, rounded)
@@ -309,30 +314,45 @@ pub fn free_of(l: Lang, free: u64, total: u64) -> String {
     }
 }
 
-pub fn scan_done(l: Lang, secs: f64, files: u64) -> String {
-    let (s, n) = (decimal(l, secs), format_count(l, files));
+/// Whether `n` takes the plural: from 2 in French, for anything but 1 in English.
+fn plural(l: Lang, n: u64) -> bool {
+    if is_fr(l) { n > 1 } else { n != 1 }
+}
+
+/// « 1 fichier », « 2 fichiers » ; “1 file”, “2 files”.
+fn files_count(l: Lang, n: u64) -> String {
+    let (c, s) = (format_count(l, n), if plural(l, n) { "s" } else { "" });
     if is_fr(l) {
-        format!("Scan terminé en {s} s · {n} fichiers")
+        format!("{c} fichier{s}")
     } else {
-        format!("Scan finished in {s} s · {n} files")
+        format!("{c} file{s}")
+    }
+}
+
+pub fn scan_done(l: Lang, secs: f64, files: u64) -> String {
+    let (s, n) = (decimal(l, secs), files_count(l, files));
+    if is_fr(l) {
+        format!("Scan terminé en {s} s · {n}")
+    } else {
+        format!("Scan finished in {s} s · {n}")
     }
 }
 
 pub fn scanning(l: Lang, files: u64, secs: u64) -> String {
-    let n = format_count(l, files);
+    let n = files_count(l, files);
     if is_fr(l) {
-        format!("Scan en cours… {n} fichiers · {secs} s")
+        format!("Scan en cours… {n} · {secs} s")
     } else {
-        format!("Scanning… {n} files · {secs} s")
+        format!("Scanning… {n} · {secs} s")
     }
 }
 
 pub fn denied_dirs(l: Lang, n: u64) -> String {
-    let c = format_count(l, n);
+    let (c, s) = (format_count(l, n), if plural(l, n) { "s" } else { "" });
     if is_fr(l) {
-        format!("{c} dossiers inaccessibles")
+        format!("{c} dossier{s} inaccessible{s}")
     } else {
-        format!("{c} inaccessible folders")
+        format!("{c} inaccessible folder{s}")
     }
 }
 
@@ -536,6 +556,49 @@ mod tests {
         assert_eq!(format_size(Lang::Fr, 1536 * G), format!("1,5{NB}To"));
         assert_eq!(format_size(Lang::En, 1536), "1.5 KB");
         assert_eq!(format_size(Lang::En, 398 * G), "398 GB");
+    }
+    #[test]
+    fn size_rounding_rolls_over_to_the_next_unit() {
+        const M: f64 = 1_048_576.0;
+        let bytes = |mib: f64| (mib * M).round() as u64;
+        assert_eq!(format_size(Lang::Fr, bytes(1023.6)), format!("1,0{NB}Go"));
+        assert_eq!(format_size(Lang::En, bytes(1023.6)), "1.0 GB");
+        assert_eq!(format_size(Lang::Fr, bytes(1023.4)), format!("1023{NB}Mo"));
+        assert_eq!(format_size(Lang::Fr, 1_048_167), format!("1,0{NB}Mo"));
+        assert_eq!(format_size(Lang::En, 1023), "1023 B");
+        // No unit above TB.
+        assert_eq!(format_size(Lang::Fr, 1024 << 40), format!("1024{NB}To"));
+        assert_eq!(format_size(Lang::En, bytes(1023.6 * M)), "1024 TB");
+    }
+    #[test]
+    fn counts_are_singular_or_plural() {
+        assert_eq!(
+            scan_done(Lang::Fr, 1.0, 1),
+            "Scan terminé en 1,0 s · 1 fichier"
+        );
+        assert_eq!(
+            scan_done(Lang::Fr, 1.0, 2),
+            "Scan terminé en 1,0 s · 2 fichiers"
+        );
+        assert_eq!(
+            scan_done(Lang::En, 1.0, 1),
+            "Scan finished in 1.0 s · 1 file"
+        );
+        assert_eq!(
+            scan_done(Lang::En, 1.0, 2),
+            "Scan finished in 1.0 s · 2 files"
+        );
+        assert_eq!(scanning(Lang::Fr, 1, 7), "Scan en cours… 1 fichier · 7 s");
+        assert_eq!(scanning(Lang::Fr, 2, 7), "Scan en cours… 2 fichiers · 7 s");
+        assert_eq!(scanning(Lang::En, 1, 7), "Scanning… 1 file · 7 s");
+        assert_eq!(scanning(Lang::En, 2, 7), "Scanning… 2 files · 7 s");
+        assert_eq!(denied_dirs(Lang::Fr, 1), "1 dossier inaccessible");
+        assert_eq!(denied_dirs(Lang::Fr, 2), "2 dossiers inaccessibles");
+        assert_eq!(denied_dirs(Lang::En, 1), "1 inaccessible folder");
+        assert_eq!(denied_dirs(Lang::En, 2), "2 inaccessible folders");
+        // French counts 0 in the singular, English in the plural.
+        assert_eq!(scanning(Lang::Fr, 0, 0), "Scan en cours… 0 fichier · 0 s");
+        assert_eq!(scanning(Lang::En, 0, 0), "Scanning… 0 files · 0 s");
     }
     #[test]
     fn counts_and_percent() {
