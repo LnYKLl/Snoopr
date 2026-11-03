@@ -1,8 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-// Deletion and modal texts are consumed by Task 15.
-#[allow(dead_code)]
 mod i18n;
 mod icons;
 mod session;

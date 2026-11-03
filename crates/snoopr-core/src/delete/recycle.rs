@@ -190,6 +190,8 @@ mod imp {
     }
 
     pub fn empty_recycle_bin(volume_root: &Path) -> io::Result<()> {
+        // Comme `recycle` : appelable depuis un thread de travail sans COM.
+        let _com = ComGuard::new();
         let root = root_wide(volume_root);
         let flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND;
         // Une corbeille déjà vide est un succès : on vérifie d'abord.

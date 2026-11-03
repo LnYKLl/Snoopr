@@ -2,8 +2,8 @@
 
 use super::node_label;
 use crate::i18n::{
-    Lang, bin_still, block_message, denied_dirs, format_size, freed, modified_ago, scan_done,
-    scanning, used_of, warning_message,
+    Lang, bin_still, block_message, deleting, denied_dirs, format_size, freed, modified_ago,
+    scan_done, scanning, used_of, warning_message,
 };
 use crate::icons::{Icon, paint_icon};
 use crate::session::Session;
@@ -31,15 +31,19 @@ fn text(t: impl Into<String>, color: Color32) -> RichText {
 }
 
 /// A small button with the dark-red look of the mockup; true when clicked.
-fn red_button(ui: &mut Ui, label: &str) -> bool {
+fn red_button(ui: &mut Ui, label: &str, enabled: bool) -> bool {
     let b = egui::Button::new(text(label, LOCK_TEXT))
         .fill(Color32::from_rgb(0x2a, 0x1d, 0x1d))
         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x4a, 0x2a, 0x2a)))
         .corner_radius(6.0)
         .min_size(vec2(0.0, 20.0));
-    ui.add(b)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    let resp = ui.add_enabled(enabled, b);
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    } else {
+        false
+    }
 }
 
 pub fn show(
@@ -60,7 +64,7 @@ pub fn show(
         |ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             if s.bin_bytes > 0 {
-                if red_button(ui, st.empty_bin) {
+                if red_button(ui, st.empty_bin, !s.is_busy()) {
                     action = StatusAction::EmptyBin;
                 }
                 ui.label(text(bin_still(lang, s.bin_bytes), TEXT_MUTED));
@@ -84,7 +88,7 @@ pub fn show(
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if !elevated && red_button(ui, st.relaunch_admin) {
+                if !elevated && red_button(ui, st.relaunch_admin, !s.is_deleting()) {
                     action = StatusAction::RelaunchAdmin;
                 }
                 ui.label(text(denied_dirs(lang, s.denied), WARN_TEXT));
@@ -107,6 +111,16 @@ pub fn show(
 }
 
 fn left_text(ui: &mut Ui, s: &Session, rules: &RuleContext, lang: Lang) {
+    if let Some(job) = &s.delete {
+        let done = job.progress.done.load(Ordering::Relaxed);
+        let total = job.progress.total.load(Ordering::Relaxed);
+        ui.add(Label::new(text(deleting(lang, done, total), TEXT)).extend());
+        return;
+    }
+    if s.empty_job.is_some() {
+        ui.add(Label::new(text(lang.s().emptying_bin, TEXT)).extend());
+        return;
+    }
     if let Some(scan) = &s.scan {
         let files = scan.progress.files.load(Ordering::Relaxed);
         ui.add(Label::new(text(scanning(lang, files, scan.elapsed().as_secs()), TEXT)).extend());

@@ -6,7 +6,7 @@ use super::widgets::{
 };
 use crate::i18n::{Lang, delete_button, format_size, used_of};
 use crate::icons::Icon;
-use crate::session::Session;
+use crate::session::{Session, can_start_delete};
 use crate::theme::{DANGER, TEXT, TEXT_MUTED, bold};
 use egui::{Align, Align2, Layout, Rect, RichText, Sense, Ui, UiBuilder, pos2, vec2};
 use snoopr_core::actions::{Disabled, PrimaryAction, primary_action};
@@ -162,11 +162,16 @@ fn drive_menu(ui: &mut Ui, s: &Session, volumes: &[Volume], lang: Lang, action: 
         a.to_string_lossy()
             .eq_ignore_ascii_case(&b.to_string_lossy())
     };
-    let usage = volumes
-        .iter()
-        .find(|v| same(&v.root, &s.volume_root))
-        .map(|v| (v.total.saturating_sub(v.free), v.total))
-        .or_else(|| (s.usage.0 > 0).then(|| (s.usage.0.saturating_sub(s.usage.1), s.usage.0)));
+    // The session's usage is read again after each deletion; the volume list
+    // only dates from startup.
+    let usage = (s.usage.0 > 0)
+        .then(|| (s.usage.0.saturating_sub(s.usage.1), s.usage.0))
+        .or_else(|| {
+            volumes
+                .iter()
+                .find(|v| same(&v.root, &s.volume_root))
+                .map(|v| (v.total.saturating_sub(v.free), v.total))
+        });
     let muted = usage.map_or(String::new(), |(u, t)| used_of(lang, u, t));
     // Letter in bold then the usage, as two adjacent pieces of one button.
     let label = if muted.is_empty() {
@@ -174,11 +179,17 @@ fn drive_menu(ui: &mut Ui, s: &Session, volumes: &[Volume], lang: Lang, action: 
     } else {
         format!("{letter}  {muted}")
     };
+    // No other target while a deletion runs: its results belong to this session.
+    let enabled = !s.is_deleting();
     let (resp, _) = Btn::new(&label)
         .icon(Icon::Drive)
         .chevron()
         .boxed()
+        .enabled(enabled)
         .show(ui);
+    if !enabled {
+        return;
+    }
     egui::Popup::menu(&resp).width(320.0).show(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         for v in volumes {
@@ -214,7 +225,7 @@ fn rescan_button(ui: &mut Ui, s: &Session, lang: Lang, action: &mut TopBarAction
     } else {
         (Icon::Refresh, st.rescan, TopBarAction::Rescan)
     };
-    let (resp, clicked) = Btn::new("").icon(icon).show(ui);
+    let (resp, clicked) = Btn::new("").icon(icon).enabled(!s.is_deleting()).show(ui);
     resp.on_hover_text(tip);
     if clicked {
         *action = act;
@@ -335,6 +346,8 @@ fn primary_button(
 ) {
     let p = primary_action(tree, &s.basket, rules, s.view.selected);
     let (label, icon, enabled) = primary_look(lang, p);
+    // Emptying the Recycle Bin waits for the scan or deletion in progress.
+    let enabled = enabled && !(p == PrimaryAction::EmptyRecycleBin && s.is_busy());
     let mut b = Btn::new(label).enabled(enabled);
     if let Some(i) = icon {
         b = b.icon(i);
@@ -379,7 +392,7 @@ fn basket_menu(ui: &mut Ui, s: &Session, tree: &Tree, lang: Lang, action: &mut T
                 });
             menu_divider(ui);
             let total = s.basket.total_size(tree);
-            let enabled = !s.is_scanning();
+            let enabled = can_start_delete(s.is_busy(), n);
             let (rect, resp) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             let dim = if enabled { 1.0 } else { 0.35 };

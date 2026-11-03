@@ -335,7 +335,8 @@ pub fn show(
             size,
         };
         let now = Instant::now();
-        if needs_rebuild(cache.as_ref(), &key, now, s.is_scanning()) {
+        // Throttled while workers grow the tree (scan, rescans after a deletion).
+        if needs_rebuild(cache.as_ref(), &key, now, s.is_busy()) {
             let bounds = core_layout::Rect {
                 x: 0.0,
                 y: 0.0,

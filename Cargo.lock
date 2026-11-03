@@ -3067,6 +3067,7 @@ dependencies = [
  "rfd",
  "snoopr-core",
  "sys-locale",
+ "tempfile",
  "windows",
 ]
 
