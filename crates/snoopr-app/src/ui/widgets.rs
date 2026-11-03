@@ -1,7 +1,7 @@
 //! Small custom widgets shared by the top bar and the status bar.
 
 use crate::icons::{Icon, paint_icon};
-use crate::theme::{AMBER, TEXT, TEXT_MUTED, bold};
+use crate::theme::{AMBER, LOCK_TEXT, TEXT, TEXT_MUTED, bold};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 pub const BAR_FONT: f32 = 12.5;
@@ -243,6 +243,54 @@ pub fn menu_row(
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A destructive menu row (red text, icon in the same colour). Disabled, it is
+/// dimmed and reacts neither to hover nor with a hand cursor.
+pub fn danger_row(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), sense);
+    let p = ui.painter();
+    let col = if enabled {
+        LOCK_TEXT
+    } else {
+        TEXT_MUTED.gamma_multiply(0.5)
+    };
+    if enabled && resp.hovered() {
+        p.rect_filled(rect, 6.0, MENU_HOVER);
+    }
+    let cy = rect.center().y;
+    let x = rect.left() + 10.0;
+    paint_icon(
+        p,
+        Rect::from_center_size(pos2(x + 7.5, cy), vec2(15.0, 15.0)),
+        icon,
+        col,
+    );
+    let g = p.layout_no_wrap(label.into(), font(), col);
+    let gh = g.size().y;
+    p.galley(pos2(x + 23.0, cy - gh / 2.0), g, col);
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
+/// A small grey explanation under a menu row; wraps, every line indented by 10 px.
+pub fn menu_note(ui: &mut Ui, text: &str) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: 10,
+            ..egui::Margin::ZERO
+        })
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(TEXT_MUTED)).wrap());
+        });
+}
+
 /// The 15 px gradient square of the logo.
 pub fn logo_square(p: &egui::Painter, rect: Rect) {
     let (a, b) = ([0x5b_u8, 0x8d, 0xef], [0xa7_u8, 0x8b, 0xfa]);
@@ -277,4 +325,47 @@ pub fn logo_square(p: &egui::Painter, rect: Rect) {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
     }
     p.add(Shape::mesh(mesh));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_note_indents_every_wrapped_line() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400., 300.))),
+            ..Default::default()
+        };
+        let mut left = f32::NAN;
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.allocate_ui(vec2(120., 300.), |ui| {
+                left = ui.max_rect().left();
+                menu_note(ui, "a note long enough to wrap over several lines");
+            });
+        });
+        // No renderer: the font atlas is never uploaded.
+        out.textures_delta.clear();
+        // Where each row's first glyph starts.
+        let starts: Vec<f32> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(t) => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| {
+                t.galley
+                    .rows
+                    .iter()
+                    .map(|r| t.pos.x + r.rect_without_leading_space().min.x)
+            })
+            .collect();
+        assert!(starts.len() >= 2, "wraps: {starts:?}");
+        assert!(
+            starts.iter().all(|&x| x >= left + 10.0 - 0.5),
+            "left {left}, rows at {starts:?}"
+        );
+    }
 }

@@ -1,7 +1,10 @@
+pub mod activity;
+pub mod context_menu;
 pub mod legend;
 pub mod modals;
 pub mod start;
 pub mod statusbar;
+pub mod toast;
 pub mod topbar;
 mod widgets;
 

@@ -1,5 +1,5 @@
-//! Windows integration: Explorer, elevation query, relaunch as administrator
-//! and the double-click time.
+//! Windows integration: Explorer, elevation query, relaunch as administrator,
+//! the double-click time and the animations setting.
 
 use std::io;
 use std::path::Path;
@@ -71,6 +71,33 @@ pub fn double_click_time() -> Option<std::time::Duration> {
 #[cfg(not(windows))]
 pub fn double_click_time() -> Option<std::time::Duration> {
     None
+}
+
+/// Windows' "Show animations in Windows" (`SPI_GETCLIENTAREAANIMATION`).
+/// True when the query fails.
+#[cfg(windows)]
+pub fn animations_enabled() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    use windows::core::BOOL;
+    let mut on = BOOL(1);
+    // SAFETY: this action writes one BOOL through the pointer, which outlives the call.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(std::ptr::from_mut(&mut on).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .is_ok();
+    !ok || on.as_bool()
+}
+
+#[cfg(not(windows))]
+pub fn animations_enabled() -> bool {
+    true
 }
 
 /// Quotes one command-line argument (wide units, lossless) following the MSVC
@@ -197,5 +224,11 @@ mod tests {
     #[test]
     fn elevation_query_does_not_panic() {
         let _ = is_elevated();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn animations_query_does_not_panic() {
+        let _ = animations_enabled();
     }
 }

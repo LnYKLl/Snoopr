@@ -2,13 +2,14 @@
 //! files and closed folders as solid blocks in their type's colour, hover,
 //! selection and basket outlines, and the hover tooltip.
 
+use super::anim::{AnimKey, Layer, Shown, TreemapAnim};
 use super::model::{
     CachedItem, CachedLayout, LabelMode, LayoutKey, build_layout, hit_test, label_mode,
     needs_rebuild,
 };
 use crate::i18n::{
-    Lang, block_message, denied_dirs, format_age, format_percent, format_size, items_count,
-    modified_ago, mostly_line, small_files, type_line, warning_message,
+    Lang, block_message, denied_dirs, format_age, format_percent, format_size, hint_line,
+    items_count, modified_ago, mostly_line, small_files, type_line, warning_message,
 };
 use crate::session::Session;
 use crate::theme::{
@@ -20,7 +21,7 @@ use egui::{
     Color32, CursorIcon, FontId, Painter, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind,
     Ui, pos2, vec2,
 };
-use snoopr_core::actions::verdict;
+use snoopr_core::actions::{PrimaryAction, primary_action, verdict};
 use snoopr_core::age::{AgeFilter, age_months, is_dimmed, now_unix};
 use snoopr_core::layout::{self as core_layout, Item};
 use snoopr_core::rules::{RuleContext, Verdict};
@@ -36,6 +37,15 @@ const LEAF_RADIUS: f32 = 4.0;
 const HEADER_H: f32 = 16.0;
 const HOVER_MIX: f32 = 0.12;
 const HATCH_STEP: f32 = 8.0;
+/// The selection glide's target when nothing is selected (then never drawn).
+const ZERO: core_layout::Rect = core_layout::Rect {
+    x: 0.0,
+    y: 0.0,
+    w: 0.0,
+    h: 0.0,
+};
+/// Longest frame step fed to the hover fade, so a stall does not skip it.
+const MAX_DT: f32 = 0.1;
 /// Opacity of `theme::dimmed` (89 / 255), applied to the labels of dimmed leaves.
 const DIM_ALPHA: f32 = 0.35;
 
@@ -43,6 +53,10 @@ pub struct TreemapEvents {
     pub clicked: Option<NodeId>,
     pub double_clicked: Option<NodeId>,
     pub clicked_empty: bool,
+    /// Right-clicked block, or the folder shown for an empty spot.
+    pub secondary_clicked: Option<NodeId>,
+    /// The response of the whole treemap area, which anchors the context menu.
+    pub response: egui::Response,
 }
 
 /// The node a block acts on: a small-files group stands for its parent.
@@ -69,9 +83,10 @@ fn to_screen(origin: Pos2, r: core_layout::Rect) -> Rect {
     Rect::from_min_size(origin + vec2(r.x, r.y), vec2(r.w, r.h))
 }
 
-fn lit(c: Color32, hot: bool) -> Color32 {
-    if hot {
-        c.lerp_to_gamma(Color32::WHITE, HOVER_MIX)
+/// `c` brightened by the hover `level` (0..=1).
+fn lit(c: Color32, level: f32) -> Color32 {
+    if level > 0.0 {
+        c.lerp_to_gamma(Color32::WHITE, HOVER_MIX * level)
     } else {
         c
     }
@@ -98,12 +113,12 @@ fn is_open_dir(it: &CachedItem) -> bool {
     it.kind == NodeKind::Dir && it.placed.header
 }
 
-fn paint_dir(p: &Painter, it: &CachedItem, r: Rect, hot: bool, lang: Lang) {
+fn paint_dir(p: &Painter, it: &CachedItem, r: Rect, level: f32, lang: Lang) {
     let c = container_colors(it.container, it.placed.depth);
     p.rect(
         r,
         DIR_RADIUS,
-        lit(c.fill, hot),
+        lit(c.fill, level),
         Stroke::new(1.0, c.border),
         StrokeKind::Inside,
     );
@@ -148,7 +163,7 @@ struct PaintCtx {
 }
 
 /// A solid block: a file, a small-files group, a closed folder or "not scanned".
-fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, hot: bool, cx: &PaintCtx) {
+fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, level: f32, cx: &PaintCtx) {
     let months = age_months(cx.now, it.newest);
     let dim = is_dimmed(cx.age, months);
     let base = match it.tone {
@@ -159,10 +174,10 @@ fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, hot: bool, cx: &PaintCtx) {
     p.rect_filled(
         r,
         LEAF_RADIUS,
-        lit(if dim { dimmed(base) } else { base }, hot),
+        lit(if dim { dimmed(base) } else { base }, level),
     );
     if it.tone == Tone::Unscanned {
-        hatch(p, r, lit(HATCH, hot).gamma_multiply(alpha), HATCH_STEP);
+        hatch(p, r, lit(HATCH, level).gamma_multiply(alpha), HATCH_STEP);
     } else if r.width() > 2.0 * LEAF_RADIUS && r.height() > 2.0 {
         // Light top edge, in place of the mockup's gradient.
         p.hline(
@@ -216,6 +231,23 @@ fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, hot: bool, cx: &PaintCtx) {
     }
 }
 
+/// One block at `r`, with `alpha` applied to everything it draws.
+fn paint_block(p: &Painter, it: &CachedItem, r: Rect, level: f32, alpha: f32, cx: &PaintCtx) {
+    let mut faded;
+    let p = if alpha < 1.0 {
+        faded = p.clone();
+        faded.multiply_opacity(alpha);
+        &faded
+    } else {
+        p
+    };
+    if is_open_dir(it) {
+        paint_dir(p, it, r, level, cx.lang);
+    } else {
+        paint_leaf(p, it, r, level, cx);
+    }
+}
+
 fn dashed_outline(p: &Painter, r: Rect, color: Color32) {
     let r = r.shrink(1.0);
     let pts = [
@@ -246,7 +278,14 @@ fn note(ui: &mut Ui, glyph: &str, color: Color32, msg: &str) {
     );
 }
 
-fn tooltip(ui: &mut Ui, it: &CachedItem, guard: Option<Verdict>, s: &Session, cx: &PaintCtx) {
+/// What the tooltip needs to know about the hovered block, read under the tree lock.
+struct Hovered {
+    guard: Option<Verdict>,
+    /// The block can go to the basket (`primary_action` is Add or Remove).
+    deletable: bool,
+}
+
+fn tooltip(ui: &mut Ui, it: &CachedItem, hov: &Hovered, s: &Session, cx: &PaintCtx) {
     let (lang, st) = (cx.lang, cx.lang.s());
     ui.set_max_width(300.0);
     ui.spacing_mut().item_spacing.y = 2.0;
@@ -294,14 +333,17 @@ fn tooltip(ui: &mut Ui, it: &CachedItem, guard: Option<Verdict>, s: &Session, cx
     if let Some(l) = kind_line {
         ui.label(small(l).color(TEXT_MUTED));
     }
-    match guard {
+    match hov.guard {
         Some(Verdict::Block(b)) => note(ui, "🔒", LOCK_TEXT, block_message(lang, b)),
         Some(Verdict::Warn(w)) => note(ui, "⚠", WARN_TEXT, warning_message(lang, w)),
         _ => {}
     }
-    if is_dir {
+    // No hint for a small-files group.
+    if matches!(it.placed.item, Item::Node(_))
+        && let Some(hint) = hint_line(lang, is_dir, hov.deletable)
+    {
         ui.add_space(2.0);
-        ui.label(RichText::new(st.double_click).size(10.0).color(TEXT_MUTED));
+        ui.label(RichText::new(hint).size(10.0).color(TEXT_MUTED));
     }
 }
 
@@ -311,30 +353,33 @@ pub fn show(
     ui: &mut Ui,
     s: &mut Session,
     cache: &mut Option<CachedLayout>,
+    anim: &mut TreemapAnim,
     rules: &RuleContext,
     lang: Lang,
 ) -> TreemapEvents {
+    let full = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(full, Sense::click());
     let mut ev = TreemapEvents {
         clicked: None,
         double_clicked: None,
         clicked_empty: false,
+        secondary_clicked: None,
+        response: resp.clone(),
     };
-    let full = ui.available_rect_before_wrap();
-    let resp = ui.allocate_rect(full, Sense::click());
     let area = full.shrink(MARGIN);
     let origin = area.min;
     // Floored, so the layout never spills out of `area`.
     let size = (area.width().max(0.0) as u32, area.height().max(0.0) as u32);
     let local = |p: Pos2| (p.x - origin.x, p.y - origin.y);
 
-    let (hovered, guard) = {
+    let now = Instant::now();
+    let (hovered, hov) = {
         let tree = s.tree.read().unwrap_or_else(PoisonError::into_inner);
         let key = LayoutKey {
             generation: tree.generation(),
             view_root: s.view.root,
             size,
         };
-        let now = Instant::now();
         // Throttled while workers grow the tree (scan, rescans after a deletion).
         if needs_rebuild(cache.as_ref(), &key, now, s.is_busy()) {
             let bounds = core_layout::Rect {
@@ -343,21 +388,31 @@ pub fn show(
                 w: size.0 as f32,
                 h: size.1 as f32,
             };
-            *cache = Some(build_layout(&tree, key, bounds, now));
+            let new = build_layout(&tree, key, bounds, now);
+            anim.layout
+                .on_rebuild(&tree, cache.as_ref(), &new, bounds, now);
+            *cache = Some(new);
         }
         let items = cache.as_ref().map_or(&[][..], |c| &c.items[..]);
         let hovered = resp.hover_pos().and_then(|p| {
             let (x, y) = local(p);
             hit_test(items, x, y)
         });
-        // Only the hovered block needs its guard rail, for the tooltip.
-        let guard = hovered.and_then(|i| match items[i].placed.item {
-            Item::Node(id) if items[i].kind != NodeKind::Unscanned => {
-                Some(verdict(&tree, rules, id))
-            }
-            _ => None,
+        // Only the hovered block needs its guard rail and its hint, for the tooltip.
+        let hov = hovered.map(|i| match items[i].placed.item {
+            Item::Node(id) if items[i].kind != NodeKind::Unscanned => Hovered {
+                guard: Some(verdict(&tree, rules, id)),
+                deletable: matches!(
+                    primary_action(&tree, &s.basket, rules, id),
+                    PrimaryAction::Add | PrimaryAction::Remove
+                ),
+            },
+            _ => Hovered {
+                guard: None,
+                deletable: false,
+            },
         });
-        (hovered, guard)
+        (hovered, hov)
     };
     let Some(layout) = cache.as_ref() else {
         return ev;
@@ -374,6 +429,13 @@ pub fn show(
             None => ev.clicked_empty = true,
         }
     }
+    if resp.secondary_clicked() {
+        ev.secondary_clicked = Some(
+            resp.interact_pointer_pos()
+                .and_then(pick)
+                .unwrap_or(s.view.root),
+        );
+    }
     if resp.double_clicked() {
         ev.double_clicked = resp.interact_pointer_pos().and_then(pick);
     }
@@ -384,41 +446,83 @@ pub fn show(
         age: s.view.age,
         now: now_unix(),
     };
-    for (i, it) in items.iter().enumerate() {
-        let r = to_screen(origin, it.placed.rect);
-        let hot = hovered == Some(i);
-        if is_open_dir(it) {
-            paint_dir(&painter, it, r, hot, lang);
+    let dt = anim
+        .last_frame
+        .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32())
+        .min(MAX_DT);
+    anim.last_frame = Some(now);
+    anim.hover
+        .update(hovered.map(|i| AnimKey::of(&items[i].placed.item)), dt);
+
+    let moving = anim.layout.is_animating(now);
+    // Where each block is drawn; hit testing above used the final layout.
+    let shown_of = |it: &CachedItem| {
+        if moving {
+            anim.layout
+                .shown(AnimKey::of(&it.placed.item), it.placed.rect, now)
         } else {
-            paint_leaf(&painter, it, r, hot, &cx);
+            Shown {
+                rect: it.placed.rect,
+                alpha: 1.0,
+            }
+        }
+    };
+    let ghosts = if moving {
+        anim.layout.ghosts(now)
+    } else {
+        Vec::new()
+    };
+    let paint_ghosts = |layer: Layer| {
+        for (it, sh, _) in ghosts.iter().filter(|g| g.2 == layer) {
+            paint_block(&painter, it, to_screen(origin, sh.rect), 0.0, sh.alpha, &cx);
+        }
+    };
+    paint_ghosts(Layer::Under);
+    let mut selected = None;
+    let mut basket = Vec::new();
+    for it in items {
+        let sh = shown_of(it);
+        let r = to_screen(origin, sh.rect);
+        let level = anim.hover.level(AnimKey::of(&it.placed.item));
+        paint_block(&painter, it, r, level, sh.alpha, &cx);
+        if let Item::Node(id) = it.placed.item {
+            if id == s.view.selected {
+                selected = Some((it, sh));
+            } else if !s.basket.is_empty() && s.basket.contains(id) {
+                basket.push((r, sh.alpha));
+            }
         }
     }
+    paint_ghosts(Layer::Over);
     // Outlines last, so nothing covers them.
-    for it in items {
-        let Item::Node(id) = it.placed.item else {
-            continue;
+    for (r, alpha) in basket {
+        dashed_outline(&painter, r, AMBER.gamma_multiply(alpha));
+    }
+    let key = selected.map(|(it, _)| AnimKey::of(&it.placed.item));
+    let at = selected.map_or(ZERO, |(_, sh)| sh.rect);
+    let outline = anim.glide.rect(key, at, now);
+    if let Some((it, sh)) = selected {
+        let radius = if is_open_dir(it) {
+            DIR_RADIUS
+        } else {
+            LEAF_RADIUS
         };
-        let r = to_screen(origin, it.placed.rect);
-        if id == s.view.selected {
-            let radius = if is_open_dir(it) {
-                DIR_RADIUS
-            } else {
-                LEAF_RADIUS
-            };
-            painter.rect_stroke(
-                r,
-                radius,
-                Stroke::new(2.0, Color32::WHITE),
-                StrokeKind::Inside,
-            );
-        } else if !s.basket.is_empty() && s.basket.contains(id) {
-            dashed_outline(&painter, r, AMBER);
-        }
+        painter.rect_stroke(
+            to_screen(origin, outline),
+            radius,
+            Stroke::new(2.0, Color32::WHITE.gamma_multiply(sh.alpha)),
+            StrokeKind::Inside,
+        );
+    }
+    if moving || anim.hover.is_animating() || anim.glide.is_animating(now) {
+        ui.ctx().request_repaint();
     }
 
     if let Some(i) = hovered {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        resp.on_hover_ui_at_pointer(|ui| tooltip(ui, &items[i], guard, s, &cx));
+        if let Some(hov) = &hov {
+            resp.on_hover_ui_at_pointer(|ui| tooltip(ui, &items[i], hov, s, &cx));
+        }
     }
     ev
 }
