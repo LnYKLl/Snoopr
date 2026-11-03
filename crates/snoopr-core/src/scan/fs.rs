@@ -52,6 +52,9 @@ pub fn read_dir_entries(dir: &Path) -> io::Result<Vec<RawEntry>> {
 }
 
 #[cfg(windows)]
+pub(crate) use win::enumerate_handle;
+
+#[cfg(windows)]
 mod win {
     use super::{RawEntry, to_verbatim};
     use std::ffi::OsString;
@@ -116,7 +119,12 @@ mod win {
         }
         .map_err(|e| io::Error::from_raw_os_error(win32_code(&e)))?;
         let guard = Guard(handle);
+        enumerate_handle(guard.0)
+    }
 
+    /// Énumère un dossier déjà ouvert (droit `FILE_LIST_DIRECTORY`), sans jamais repasser par un chemin.
+    /// Recommence toujours depuis le début de l'énumération.
+    pub fn enumerate_handle(handle: HANDLE) -> io::Result<Vec<RawEntry>> {
         // u64 pour garantir l'alignement sur 8 octets de FILE_FULL_DIR_INFO.
         let mut buf = vec![0u64; BUF_BYTES / 8];
         let mut out = Vec::new();
@@ -131,7 +139,7 @@ mod win {
             // SAFETY: le tampon fait BUF_BYTES octets et reste valide pendant l'appel.
             let res = unsafe {
                 GetFileInformationByHandleEx(
-                    guard.0,
+                    handle,
                     class,
                     buf.as_mut_ptr().cast(),
                     BUF_BYTES as u32,

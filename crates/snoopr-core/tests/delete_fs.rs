@@ -123,3 +123,63 @@ fn root_junction_removes_link_only() {
     assert!(!j.exists());
     assert!(outside.join("precious.txt").exists());
 }
+
+#[test]
+fn deletes_lone_surrogate_names() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    let weird = OsString::from_wide(&[0xD800, 0x61]);
+
+    // Imbriqué dans la cible.
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    write_file(&d.join(&weird).join("f.txt"), 10);
+    assert_eq!(delete_permanently(&d), ItemOutcome::Removed);
+    assert!(!d.exists());
+
+    // Cible racine.
+    let root = t.path().join(&weird);
+    write_file(&root.join("f.txt"), 10);
+    assert_eq!(delete_permanently(&root), ItemOutcome::Removed);
+    assert_eq!(
+        std::fs::symlink_metadata(&root).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn root_with_dot_component() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    write_file(&d.join("f.txt"), 10);
+    let target = t.path().join(".").join("d");
+    assert_eq!(delete_permanently(&target), ItemOutcome::Removed);
+    assert!(!d.exists());
+}
+
+#[test]
+fn pinned_open_failure_reports_in_use() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    let nested = d.join("nested");
+    write_file(&nested.join("child.txt"), 10);
+    write_file(&d.join("gone.txt"), 10);
+    // DELETE sans FILE_SHARE_DELETE : le dossier ne peut plus être ouvert pour suppression.
+    let holder = std::fs::OpenOptions::new()
+        .access_mode(0x0001_0000)
+        .share_mode(1 | 2)
+        .custom_flags(0x0200_0000)
+        .open(&nested)
+        .unwrap();
+    assert_eq!(
+        delete_permanently(&d),
+        ItemOutcome::Partial(vec![Failure {
+            path: nested.clone(),
+            reason: FailureReason::InUse
+        }])
+    );
+    assert!(nested.join("child.txt").exists());
+    assert!(!d.join("gone.txt").exists());
+    drop(holder);
+}
