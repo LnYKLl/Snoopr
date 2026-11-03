@@ -41,8 +41,8 @@ pub struct SnooprApp {
     pub freed_toast: FreedToast,
     /// The activity line under the top bar.
     pub activity: ActivityLine,
-    /// When the app was created: the start-screen cards animate from here.
-    pub start_appeared: Instant,
+    /// When the start screen was first drawn: its cards animate from here.
+    pub start_appeared: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +87,13 @@ pub fn delete_key_target(tree: &Tree, view_root: NodeId, selected: NodeId) -> Op
     }
 }
 
+/// With Windows animations off, egui's own fades take no time either (spec §4).
+fn apply_motion(ctx: &egui::Context, enabled: bool) {
+    if !enabled {
+        ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    }
+}
+
 const KEYS: [egui::Key; 4] = [
     egui::Key::Backspace,
     egui::Key::Delete,
@@ -98,6 +105,7 @@ impl SnooprApp {
     pub fn new(cc: &eframe::CreationContext, target: Option<PathBuf>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply_visuals(&cc.egui_ctx);
+        apply_motion(&cc.egui_ctx, crate::anim::motion_enabled());
         let mut app = SnooprApp {
             lang: Lang::detect(),
             rules: RuleContext::from_system(),
@@ -110,7 +118,7 @@ impl SnooprApp {
             menu_target: None,
             freed_toast: FreedToast::new(0, crate::anim::motion_enabled()),
             activity: ActivityLine::new(crate::anim::motion_enabled()),
-            start_appeared: Instant::now(),
+            start_appeared: None,
         };
         if let Some(t) = target {
             app.start_session(t);
@@ -129,6 +137,7 @@ impl SnooprApp {
         self.layout_cache = None;
         self.treemap_anim.reset();
         self.modal = None;
+        self.menu_target = None;
     }
 
     /// A deletion or the emptying of the Recycle Bin is running.
@@ -504,7 +513,7 @@ impl eframe::App for SnooprApp {
                     self.menu_target = Some(id);
                 }
                 if let Some(t) = self.menu_target {
-                    let shown = egui::Popup::context_menu(&ev.response)
+                    let shown = context_menu::popup(&ev.response)
                         .show(|ui| context_menu::show(ui, s, &self.rules, self.lang, t));
                     match shown {
                         Some(r) => menu = r.inner,
@@ -519,16 +528,19 @@ impl eframe::App for SnooprApp {
                     ui.ctx().request_repaint();
                 }
             } else {
-                picked = ui::start::show(ui, self.lang, &self.volumes, self.start_appeared);
+                let appeared = *self.start_appeared.get_or_insert(now);
+                picked = ui::start::show(ui, self.lang, &self.volumes, appeared);
             }
         });
         if !modal_open {
+            // First: its ids belong to the session drawn this frame, which
+            // the top bar may replace.
+            self.apply_menu(ui.ctx(), menu);
             if let Some(p) = picked {
                 self.start_session(p);
             }
             self.apply_top(ui.ctx(), top);
             self.apply_status(ui.ctx(), status);
-            self.apply_menu(ui.ctx(), menu);
         }
         // Over the treemap, under the dialogs.
         if let Some(v) = self.freed_toast.view(now) {
@@ -563,6 +575,22 @@ mod tests {
         for k in [Key::Backspace, Key::Delete, Key::Enter] {
             assert_eq!(key_action(k, true), None);
         }
+    }
+
+    #[test]
+    fn motion_off_stops_egui_animations() {
+        use egui::Theme;
+        let time = |ctx: &egui::Context| {
+            [Theme::Dark, Theme::Light].map(|t| ctx.style_of(t).animation_time)
+        };
+        let on = egui::Context::default();
+        let default = time(&on);
+        apply_motion(&on, true);
+        assert_eq!(time(&on), default);
+        assert!(default[0] > 0.0);
+        let off = egui::Context::default();
+        apply_motion(&off, false);
+        assert_eq!(time(&off), [0.0, 0.0]);
     }
 
     #[test]

@@ -279,12 +279,16 @@ pub fn danger_row(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Respon
     }
 }
 
-/// A small grey explanation under a menu row; wraps, indented by 10 px.
+/// A small grey explanation under a menu row; wraps, every line indented by 10 px.
 pub fn menu_note(ui: &mut Ui, text: &str) {
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new(text).size(11.0).color(TEXT_MUTED));
-    });
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: 10,
+            ..egui::Margin::ZERO
+        })
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(TEXT_MUTED)).wrap());
+        });
 }
 
 /// The 15 px gradient square of the logo.
@@ -321,4 +325,47 @@ pub fn logo_square(p: &egui::Painter, rect: Rect) {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
     }
     p.add(Shape::mesh(mesh));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_note_indents_every_wrapped_line() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400., 300.))),
+            ..Default::default()
+        };
+        let mut left = f32::NAN;
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.allocate_ui(vec2(120., 300.), |ui| {
+                left = ui.max_rect().left();
+                menu_note(ui, "a note long enough to wrap over several lines");
+            });
+        });
+        // No renderer: the font atlas is never uploaded.
+        out.textures_delta.clear();
+        // Where each row's first glyph starts.
+        let starts: Vec<f32> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(t) => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| {
+                t.galley
+                    .rows
+                    .iter()
+                    .map(|r| t.pos.x + r.rect_without_leading_space().min.x)
+            })
+            .collect();
+        assert!(starts.len() >= 2, "wraps: {starts:?}");
+        assert!(
+            starts.iter().all(|&x| x >= left + 10.0 - 0.5),
+            "left {left}, rows at {starts:?}"
+        );
+    }
 }

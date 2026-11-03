@@ -116,6 +116,24 @@ fn shortened(name: String) -> String {
     out
 }
 
+/// The menu's popup, opened by a right-click on the treemap `response`.
+///
+/// A right-click on another block while the menu is open moves it there, as
+/// Explorer does: `context_menu` reopens it at the pointer, but its default
+/// `CloseOnClick` would close it again in the same frame, so that one click
+/// is ignored. The rows change with the target, hence the sizing pass that
+/// egui runs on any (re)opening.
+pub fn popup(response: &egui::Response) -> egui::Popup<'static> {
+    let popup = egui::Popup::context_menu(response);
+    if response.secondary_clicked() {
+        popup
+            .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+            .sizing_pass(true)
+    } else {
+        popup
+    }
+}
+
 /// Draws the menu of `target` and returns the clicked action (the menu then closes).
 pub fn show(
     ui: &mut Ui,
@@ -335,6 +353,80 @@ mod tests {
             d(f.movie, Activity::EmptyingBin),
             DeleteRow::Disabled(Some(Why::Deleting))
         );
+    }
+
+    /// Headless egui frames over an 800×600 click area that opens [`popup`].
+    struct Harness {
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Harness {
+        /// Runs one frame; returns the menu's rectangle when it is shown.
+        fn frame(&mut self, events: Vec<egui::Event>) -> Option<egui::Rect> {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800., 600.),
+                )),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut shown = None;
+            let mut out = self.ctx.run_ui(input, |ui| {
+                let resp = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
+                shown = popup(&resp)
+                    .show(|ui| ui.label("menu"))
+                    .map(|r| r.response.rect);
+            });
+            // No renderer: the font atlas is never uploaded.
+            out.textures_delta.clear();
+            shown
+        }
+
+        /// A right-click at `pos`: move, press, release, then one quiet frame.
+        fn right_click(&mut self, pos: egui::Pos2) -> Option<egui::Rect> {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![egui::Event::PointerMoved(pos), button(true)]);
+            self.frame(vec![button(false)]);
+            self.frame(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_right_click_elsewhere_moves_the_open_menu() {
+        let mut h = Harness {
+            ctx: egui::Context::default(),
+            time: 0.0,
+        };
+        assert_eq!(h.frame(Vec::new()), None);
+        let a = egui::pos2(100., 100.);
+        let at_a = h.right_click(a).expect("opened at the first block");
+        assert!((at_a.min - a).length() < 1.0, "{at_a:?}");
+        // As in Explorer: the menu reopens on the new block, not just closes.
+        let b = egui::pos2(400., 300.);
+        let at_b = h.right_click(b).expect("still open, on the new block");
+        assert!((at_b.min - b).length() < 1.0, "{at_b:?}");
+        // A left click elsewhere still closes it.
+        let left = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(600., 500.),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(vec![
+            egui::Event::PointerMoved(egui::pos2(600., 500.)),
+            left(true),
+        ]);
+        h.frame(vec![left(false)]);
+        assert_eq!(h.frame(Vec::new()), None);
     }
 
     #[test]
