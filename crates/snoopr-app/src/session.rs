@@ -3,10 +3,12 @@
 use snoopr_core::age::AgeFilter;
 use snoopr_core::basket::Basket;
 use snoopr_core::delete::recycle::query_recycle_bin;
+use snoopr_core::filetype::root_context;
+use snoopr_core::rules::RuleContext;
 use snoopr_core::scan::{ScanHandle, start_scan};
 use snoopr_core::tree::{NodeId, NodeKind, SharedTree, Tree};
 use snoopr_core::volume::{update_unscanned, volume_root_of, volume_usage};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -42,6 +44,14 @@ fn mtime_secs(path: &std::path::Path) -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
+/// The tree a scan of `target` fills. Its root context (system, programs,
+/// games…) comes from the safety rules and must be set before the first child.
+fn empty_tree(target: &Path, newest: i64, rules: &RuleContext) -> Tree {
+    let mut tree = Tree::new(target.to_path_buf(), newest);
+    tree.set_root_context(root_context(target, rules));
+    tree
+}
+
 impl Session {
     fn new(target: PathBuf, tree: Tree, scan: Option<ScanHandle>) -> Session {
         let root = tree.root();
@@ -67,8 +77,8 @@ impl Session {
     }
 
     /// Starts scanning `target` on worker threads; returns immediately.
-    pub fn start(target: PathBuf) -> Session {
-        let tree = Tree::new(target.clone(), mtime_secs(&target));
+    pub fn start(target: PathBuf, rules: &RuleContext) -> Session {
+        let tree = empty_tree(&target, mtime_secs(&target), rules);
         let mut s = Session::new(target.clone(), tree, None);
         s.disk_total = volume_usage(&target).map_or(0, |u| u.0);
         let root = s.view.root;
@@ -149,6 +159,8 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snoopr_core::filetype::{Context, FileType};
+    use snoopr_core::rules::RuleContext;
     use snoopr_core::tree::{EntryData, NodeKind, Tree};
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -178,5 +190,23 @@ mod tests {
         assert_eq!(s.view.root, root);
         s.up();
         assert_eq!(s.view.root, root);
+    }
+
+    #[test]
+    fn scan_tree_gets_root_context() {
+        let rules = RuleContext {
+            windows_dir: r"C:\Windows".into(),
+            program_data: r"C:\ProgramData".into(),
+            users_dir: r"C:\Users".into(),
+            cloud_roots: Vec::new(),
+        };
+        let mut t = empty_tree(Path::new(r"C:\Windows"), 7, &rules);
+        let root = t.root();
+        assert_eq!(t.node(root).ctx, Context::System);
+        assert_eq!(t.node(root).newest, 7);
+        let f = t.add_children(root, vec![e("a.zip", NodeKind::File)])[0];
+        assert_eq!(t.file_type(f), Some(FileType::System));
+        let t = empty_tree(Path::new(r"D:\Data"), 0, &rules);
+        assert_eq!(t.node(t.root()).ctx, Context::None);
     }
 }

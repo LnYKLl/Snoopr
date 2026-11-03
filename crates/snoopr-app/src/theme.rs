@@ -1,6 +1,7 @@
 //! Colors, block palettes, visuals and fonts.
 
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke};
+use snoopr_core::filetype::FileType;
 use std::sync::Arc;
 
 pub const BG: Color32 = Color32::from_rgb(0x0f, 0x11, 0x16);
@@ -14,8 +15,11 @@ pub const DANGER: Color32 = Color32::from_rgb(0xc2, 0x36, 0x4a);
 pub const LOCK_TEXT: Color32 = Color32::from_rgb(0xf3, 0xb4, 0xb4);
 pub const WARN_TEXT: Color32 = Color32::from_rgb(0xf3, 0xd7, 0x9a);
 pub const OK_TEXT: Color32 = Color32::from_rgb(0x6e, 0xe7, 0xa8);
-
-pub const HUES: [f32; 8] = [212., 335., 168., 28., 265., 45., 190., 300.];
+/// Opaque fill of tooltips, menus and popups.
+pub const POPUP_BG: Color32 = Color32::from_rgb(0x17, 0x1a, 0x21);
+/// The "not scanned" block: this fill under `HATCH` diagonal lines.
+pub const UNSCANNED_FILL: Color32 = Color32::from_rgb(0x3a, 0x3d, 0x46);
+pub const HATCH: Color32 = Color32::from_rgb(0x4e, 0x52, 0x5d);
 
 /// Hue in degrees, saturation and lightness in 0..=100.
 pub fn hsl(h: f32, s: f32, l: f32) -> Color32 {
@@ -36,12 +40,33 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color32 {
     Color32::from_rgb(to(r), to(g), to(b))
 }
 
+/// Fill of a solid block (file, small-files group, closed folder) of type `t`.
+pub fn type_color(t: FileType) -> Color32 {
+    let (r, g, b) = match t {
+        FileType::Game => (0xe1, 0x1d, 0x48),
+        FileType::Media => (0x93, 0x33, 0xea),
+        FileType::Archive => (0xd9, 0x77, 0x06),
+        FileType::VirtualDisk => (0x0d, 0x94, 0x88),
+        FileType::Cache => (0x65, 0xa3, 0x0d),
+        FileType::Program => (0x25, 0x63, 0xeb),
+        FileType::System => (0x47, 0x55, 0x69),
+        FileType::Other => (0x64, 0x74, 0x8b),
+    };
+    Color32::from_rgb(r, g, b)
+}
+
+/// Colour of a solid block: its content type, or the hatched "not scanned" grey.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Tone {
-    Normal(f32),
-    System,
-    RecycleBin,
+    Type(FileType),
     Unscanned,
+}
+
+/// Look of an open folder: neutral, or dark red in the Recycle Bin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Container {
+    Normal,
+    RecycleBin,
 }
 
 pub struct BlockColors {
@@ -49,27 +74,19 @@ pub struct BlockColors {
     pub border: Color32,
 }
 
-fn hue_sat(t: Tone) -> (f32, f32) {
-    match t {
-        Tone::Normal(h) => (h, 62.),
-        Tone::System => (215., 12.),
-        Tone::RecycleBin => (0., 62.),
-        Tone::Unscanned => (0., 0.),
+/// Open-folder colours, slightly lighter at each nesting level.
+pub fn container_colors(c: Container, depth: u16) -> BlockColors {
+    let d = 3. * f32::from(depth);
+    match c {
+        Container::Normal => BlockColors {
+            fill: hsl(222., 14., (10. + d).min(28.)),
+            border: hsl(222., 14., (20. + d).min(40.)),
+        },
+        Container::RecycleBin => BlockColors {
+            fill: hsl(0., 35., (13. + d).min(28.)),
+            border: hsl(0., 45., (28. + d).min(44.)),
+        },
     }
-}
-
-pub fn dir_colors(t: Tone, depth: u16) -> BlockColors {
-    let (h, s) = hue_sat(t);
-    let d = f32::from(depth);
-    BlockColors {
-        fill: hsl(h, s, (13. + 6. * d).min(45.)),
-        border: hsl(h, s, (24. + 6. * d).min(60.)),
-    }
-}
-
-pub fn leaf_color(t: Tone, depth: u16) -> Color32 {
-    let (h, s) = hue_sat(t);
-    hsl(h, s, (41. - 3. * f32::from(depth)).max(22.))
 }
 
 /// 80 % toward grey #2a2d36, at 35 % opacity.
@@ -81,7 +98,9 @@ pub fn dimmed(c: Color32) -> Color32 {
 pub fn apply_visuals(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;
-    v.window_fill = BAR_BG;
+    // Tooltips, menus and popups are framed with `window_fill`: opaque, so the
+    // treemap never shows through them.
+    v.window_fill = POPUP_BG;
     v.extreme_bg_color = BG;
     v.faint_bg_color = BAR_BG;
     v.window_stroke = Stroke::new(1., BORDER);
@@ -161,5 +180,38 @@ mod tests {
         let g = hsl(212., 0., 50.);
         assert!(g.r() == 127 || g.r() == 128);
         assert_eq!((g.r(), g.g()), (g.g(), g.b()));
+    }
+
+    #[test]
+    fn type_colors() {
+        use FileType::*;
+        let rgb = Color32::from_rgb;
+        assert_eq!(type_color(Game), rgb(0xe1, 0x1d, 0x48));
+        assert_eq!(type_color(Media), rgb(0x93, 0x33, 0xea));
+        assert_eq!(type_color(Archive), rgb(0xd9, 0x77, 0x06));
+        assert_eq!(type_color(VirtualDisk), rgb(0x0d, 0x94, 0x88));
+        assert_eq!(type_color(Cache), rgb(0x65, 0xa3, 0x0d));
+        assert_eq!(type_color(Program), rgb(0x25, 0x63, 0xeb));
+        assert_eq!(type_color(System), rgb(0x47, 0x55, 0x69));
+        assert_eq!(type_color(Other), rgb(0x64, 0x74, 0x8b));
+    }
+
+    #[test]
+    fn container_lightness_grows_with_depth_and_is_capped() {
+        let n0 = container_colors(Container::Normal, 0);
+        assert_eq!(n0.fill, hsl(222., 14., 10.));
+        assert_eq!(n0.border, hsl(222., 14., 20.));
+        let n2 = container_colors(Container::Normal, 2);
+        assert_eq!(n2.fill, hsl(222., 14., 16.));
+        assert_eq!(n2.border, hsl(222., 14., 26.));
+        let n9 = container_colors(Container::Normal, 9);
+        assert_eq!(n9.fill, hsl(222., 14., 28.));
+        assert_eq!(n9.border, hsl(222., 14., 40.));
+        let b0 = container_colors(Container::RecycleBin, 0);
+        assert_eq!(b0.fill, hsl(0., 35., 13.));
+        assert_eq!(b0.border, hsl(0., 45., 28.));
+        let b9 = container_colors(Container::RecycleBin, 9);
+        assert_eq!(b9.fill, hsl(0., 35., 28.));
+        assert_eq!(b9.border, hsl(0., 45., 44.));
     }
 }

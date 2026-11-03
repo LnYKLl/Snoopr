@@ -1,6 +1,7 @@
 //! All user-visible text and number formats, in French and English.
 
 use snoopr_core::delete::FailureReason;
+use snoopr_core::filetype::FileType;
 use snoopr_core::rules::{Block, Warning};
 
 /// UI language, following Windows.
@@ -459,6 +460,42 @@ pub fn warning_message(l: Lang, w: Warning) -> &'static str {
     }
 }
 
+/// Name of a content type, as in the legend.
+pub fn type_name(l: Lang, t: FileType) -> &'static str {
+    match t {
+        FileType::Game => pick(l, "Jeux", "Games"),
+        FileType::Media => pick(l, "Vidéos & images", "Videos & images"),
+        FileType::Archive => pick(l, "Archives & installateurs", "Archives & installers"),
+        FileType::VirtualDisk => pick(l, "Disques virtuels", "Virtual disks"),
+        FileType::Cache => pick(l, "Cache & temporaire", "Cache & temp files"),
+        FileType::Program => pick(l, "Programmes", "Programs"),
+        FileType::System => pick(l, "Système", "System"),
+        FileType::Other => pick(l, "Autres", "Other"),
+    }
+}
+
+/// Tooltip line of a file: "Type : Jeux".
+pub fn type_line(l: Lang, t: FileType) -> String {
+    let name = type_name(l, t);
+    if is_fr(l) {
+        format!("Type\u{a0}: {name}")
+    } else {
+        format!("Type: {name}")
+    }
+}
+
+/// Tooltip line of a folder: its dominant type and that type's share
+/// (0..=1), as a whole percentage: "Surtout : Jeux (62 %)".
+pub fn mostly_line(l: Lang, t: FileType, share: f32) -> String {
+    let name = type_name(l, t);
+    let pct = (f64::from(share) * 100.0).round().clamp(0.0, 100.0) as u32;
+    if is_fr(l) {
+        format!("Surtout\u{a0}: {name} ({pct}\u{a0}%)")
+    } else {
+        format!("Mostly: {name} ({pct}%)")
+    }
+}
+
 pub fn failure_reason(l: Lang, r: &FailureReason) -> String {
     match r {
         FailureReason::InUse => pick(
@@ -610,5 +647,46 @@ mod tests {
         );
         assert_eq!(Lang::Fr.s().cancel, "Annuler");
         assert_eq!(Lang::En.s().choose_folder, "Choose a folder…");
+    }
+    #[test]
+    fn file_types() {
+        use FileType::*;
+        let fr = [
+            (Game, "Jeux"),
+            (Media, "Vidéos & images"),
+            (Archive, "Archives & installateurs"),
+            (VirtualDisk, "Disques virtuels"),
+            (Cache, "Cache & temporaire"),
+            (Program, "Programmes"),
+            (System, "Système"),
+            (Other, "Autres"),
+        ];
+        let en = [
+            (Game, "Games"),
+            (Media, "Videos & images"),
+            (Archive, "Archives & installers"),
+            (VirtualDisk, "Virtual disks"),
+            (Cache, "Cache & temp files"),
+            (Program, "Programs"),
+            (System, "System"),
+            (Other, "Other"),
+        ];
+        for (t, name) in fr {
+            assert_eq!(type_name(Lang::Fr, t), name);
+        }
+        for (t, name) in en {
+            assert_eq!(type_name(Lang::En, t), name);
+        }
+        assert_eq!(type_line(Lang::Fr, Game), "Type\u{a0}: Jeux");
+        assert_eq!(type_line(Lang::En, Game), "Type: Games");
+        assert_eq!(mostly_line(Lang::En, Game, 0.62), "Mostly: Games (62%)");
+        assert_eq!(
+            mostly_line(Lang::Fr, Game, 0.62),
+            format!("Surtout{NB}: Jeux (62{NB}%)")
+        );
+        assert_eq!(
+            mostly_line(Lang::En, Archive, 0.996),
+            "Mostly: Archives & installers (100%)"
+        );
     }
 }

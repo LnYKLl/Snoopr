@@ -1,5 +1,6 @@
-//! Treemap drawing: rounded containers with a header band, leaves with labels,
-//! hover, selection and basket outlines, and the hover tooltip.
+//! Treemap drawing: open folders as neutral containers with a header band,
+//! files and closed folders as solid blocks in their type's colour, hover,
+//! selection and basket outlines, and the hover tooltip.
 
 use super::model::{
     CachedItem, CachedLayout, LabelMode, LayoutKey, build_layout, hit_test, label_mode,
@@ -7,11 +8,12 @@ use super::model::{
 };
 use crate::i18n::{
     Lang, block_message, denied_dirs, format_age, format_percent, format_size, items_count,
-    modified_ago, small_files, warning_message,
+    modified_ago, mostly_line, small_files, type_line, warning_message,
 };
 use crate::session::Session;
 use crate::theme::{
-    self, AMBER, LOCK_TEXT, TEXT, TEXT_MUTED, Tone, WARN_TEXT, dimmed, dir_colors, leaf_color,
+    self, AMBER, HATCH, LOCK_TEXT, TEXT, TEXT_MUTED, Tone, UNSCANNED_FILL, WARN_TEXT,
+    container_colors, dimmed, type_color,
 };
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
@@ -33,8 +35,6 @@ const LEAF_RADIUS: f32 = 4.0;
 /// Height of a folder's header band (`LayoutParams::default().header_h`).
 const HEADER_H: f32 = 16.0;
 const HOVER_MIX: f32 = 0.12;
-const UNSCANNED_FILL: Color32 = Color32::from_rgb(0x3a, 0x3d, 0x46);
-const HATCH: Color32 = Color32::from_rgb(0x4e, 0x52, 0x5d);
 const HATCH_STEP: f32 = 8.0;
 /// Opacity of `theme::dimmed` (89 / 255), applied to the labels of dimmed leaves.
 const DIM_ALPHA: f32 = 0.35;
@@ -93,8 +93,13 @@ fn text_row(p: &Painter, at: Pos2, text: &str, font: FontId, color: Color32, max
     p.galley(at, p.layout_job(single_row(job, max_w)), color);
 }
 
+/// An open folder (`Dir` with a header band): its children are drawn on top.
+fn is_open_dir(it: &CachedItem) -> bool {
+    it.kind == NodeKind::Dir && it.placed.header
+}
+
 fn paint_dir(p: &Painter, it: &CachedItem, r: Rect, hot: bool, lang: Lang) {
-    let c = dir_colors(it.tone, it.placed.depth);
+    let c = container_colors(it.container, it.placed.depth);
     p.rect(
         r,
         DIR_RADIUS,
@@ -103,7 +108,7 @@ fn paint_dir(p: &Painter, it: &CachedItem, r: Rect, hot: bool, lang: Lang) {
         StrokeKind::Inside,
     );
     let max_w = r.width() - 12.0;
-    if !it.placed.header || max_w <= 0.0 {
+    if max_w <= 0.0 {
         return;
     }
     let mut job = LayoutJob::default();
@@ -122,15 +127,15 @@ fn paint_dir(p: &Painter, it: &CachedItem, r: Rect, hot: bool, lang: Lang) {
     p.with_clip_rect(r).galley(pos2(r.left() + 6.0, y), g, TEXT);
 }
 
-/// Diagonal 1 px lines every `HATCH_STEP` px, clipped to `r`.
-fn hatch(p: &Painter, r: Rect, color: Color32) {
+/// Diagonal 1 px lines every `step` px, clipped to `r`: the "not scanned" look.
+pub fn hatch(p: &Painter, r: Rect, color: Color32, step: f32) {
     let p = p.with_clip_rect(r);
     let st = Stroke::new(1.0, color);
     let h = r.height();
     let mut x = r.left() - h;
     while x < r.right() {
         p.line_segment([pos2(x, r.bottom()), pos2(x + h, r.top())], st);
-        x += HATCH_STEP;
+        x += step;
     }
 }
 
@@ -142,14 +147,13 @@ struct PaintCtx {
     now: i64,
 }
 
+/// A solid block: a file, a small-files group, a closed folder or "not scanned".
 fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, hot: bool, cx: &PaintCtx) {
     let months = age_months(cx.now, it.newest);
     let dim = is_dimmed(cx.age, months);
-    let unscanned = it.tone == Tone::Unscanned;
-    let base = if unscanned {
-        UNSCANNED_FILL
-    } else {
-        leaf_color(it.tone, it.placed.depth)
+    let base = match it.tone {
+        Tone::Unscanned => UNSCANNED_FILL,
+        Tone::Type(t) => type_color(t),
     };
     let alpha = if dim { DIM_ALPHA } else { 1.0 };
     p.rect_filled(
@@ -157,8 +161,8 @@ fn paint_leaf(p: &Painter, it: &CachedItem, r: Rect, hot: bool, cx: &PaintCtx) {
         LEAF_RADIUS,
         lit(if dim { dimmed(base) } else { base }, hot),
     );
-    if unscanned {
-        hatch(p, r, lit(HATCH, hot).gamma_multiply(alpha));
+    if it.tone == Tone::Unscanned {
+        hatch(p, r, lit(HATCH, hot).gamma_multiply(alpha), HATCH_STEP);
     } else if r.width() > 2.0 * LEAF_RADIUS && r.height() > 2.0 {
         // Light top edge, in place of the mockup's gradient.
         p.hline(
@@ -278,6 +282,18 @@ fn tooltip(ui: &mut Ui, it: &CachedItem, guard: Option<Verdict>, s: &Session, cx
         line.push_str(&items_count(lang, it.files));
     }
     ui.label(small(line).color(TEXT_MUTED));
+    // A file's type, a folder's dominant one; none for a small-files group,
+    // whose files may be of any type.
+    let kind_line = match (&it.placed.item, it.tone) {
+        (Item::SmallGroup { .. }, _) | (_, Tone::Unscanned) => None,
+        (Item::Node(_), Tone::Type(_)) if is_dir => {
+            it.dominant.map(|(t, share)| mostly_line(lang, t, share))
+        }
+        (Item::Node(_), Tone::Type(t)) => Some(type_line(lang, t)),
+    };
+    if let Some(l) = kind_line {
+        ui.label(small(l).color(TEXT_MUTED));
+    }
     match guard {
         Some(Verdict::Block(b)) => note(ui, "🔒", LOCK_TEXT, block_message(lang, b)),
         Some(Verdict::Warn(w)) => note(ui, "⚠", WARN_TEXT, warning_message(lang, w)),
@@ -326,7 +342,7 @@ pub fn show(
                 w: size.0 as f32,
                 h: size.1 as f32,
             };
-            *cache = Some(build_layout(&tree, rules, key, bounds, now));
+            *cache = Some(build_layout(&tree, key, bounds, now));
         }
         let items = cache.as_ref().map_or(&[][..], |c| &c.items[..]);
         let hovered = resp.hover_pos().and_then(|p| {
@@ -370,7 +386,7 @@ pub fn show(
     for (i, it) in items.iter().enumerate() {
         let r = to_screen(origin, it.placed.rect);
         let hot = hovered == Some(i);
-        if it.kind == NodeKind::Dir {
+        if is_open_dir(it) {
             paint_dir(&painter, it, r, hot, lang);
         } else {
             paint_leaf(&painter, it, r, hot, &cx);
@@ -383,7 +399,7 @@ pub fn show(
         };
         let r = to_screen(origin, it.placed.rect);
         if id == s.view.selected {
-            let radius = if it.kind == NodeKind::Dir {
+            let radius = if is_open_dir(it) {
                 DIR_RADIUS
             } else {
                 LEAF_RADIUS

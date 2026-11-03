@@ -1,3 +1,4 @@
+pub mod legend;
 pub mod start;
 pub mod statusbar;
 pub mod topbar;

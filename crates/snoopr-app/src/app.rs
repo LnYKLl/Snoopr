@@ -77,7 +77,7 @@ impl SnooprApp {
         if let Some(old) = &self.session {
             old.cancel();
         }
-        self.session = Some(Session::start(target));
+        self.session = Some(Session::start(target, &self.rules));
         self.layout_cache = None;
     }
 
@@ -232,6 +232,16 @@ impl eframe::App for SnooprApp {
                 rect.top() + 0.5,
                 egui::Stroke::new(1.0, theme::BORDER),
             );
+            // Shown after the status bar, so it sits just above it, on the
+            // treemap background; the chips line up with the treemap's margin.
+            egui::Panel::bottom("legend")
+                .exact_size(22.0)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::BG)
+                        .inner_margin(egui::Margin::symmetric(10, 0)),
+                )
+                .show(ui, |ui| ui::legend::show(ui, self.lang));
         }
         let panel = if self.session.is_some() {
             // The treemap keeps its own 8 px margin.

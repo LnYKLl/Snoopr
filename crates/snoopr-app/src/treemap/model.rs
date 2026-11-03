@@ -1,11 +1,10 @@
 //! Treemap model: the layout cache, its rebuild policy, hit testing and tones.
 
-use crate::theme::{HUES, Tone};
-use snoopr_core::actions::verdict;
+use crate::theme::{Container, Tone};
+use snoopr_core::filetype::FileType;
 use snoopr_core::layout::{Item, LayoutParams, Placed, Rect, layout};
-use snoopr_core::rules::{RuleContext, Verdict};
 use snoopr_core::tree::{NodeId, NodeKind, Tree};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// While a scan runs, the layout is rebuilt at most this often.
@@ -23,14 +22,21 @@ pub struct LayoutKey {
 #[derive(Clone, Debug)]
 pub struct CachedItem {
     pub placed: Placed,
+    /// Fill of solid blocks: a file's type, a small-files group's or a closed
+    /// folder's dominant type. An open folder keeps its dominant type here too.
     pub tone: Tone,
+    /// Look of an open folder; also set, unused, on the other blocks.
+    pub container: Container,
+    /// A `Dir`'s heaviest type and its share (0..=1), for the tooltip.
+    pub dominant: Option<(FileType, f32)>,
     /// Empty when the displayed name is localized and built at paint time:
     /// small-files group, Recycle Bin, "Not scanned".
     pub name: String,
     pub size: u64,
     pub newest: i64,
     pub files: u64,
-    /// `Dir` blocks are drawn as containers; a small-files group is a `File`.
+    /// A `Dir` with `placed.header` is drawn as a container; without it, as a
+    /// closed solid block. A small-files group is a `File`.
     pub kind: NodeKind,
 }
 
@@ -57,71 +63,27 @@ pub fn needs_rebuild(
     now.saturating_duration_since(prev.built_at) >= SCAN_REBUILD_EVERY
 }
 
-/// The root's children sorted by decreasing size (ties by id) get `HUES[i % 8]`.
-pub fn hue_map(tree: &Tree) -> HashMap<NodeId, f32> {
-    let mut kids = tree.node(tree.root()).children.clone();
-    kids.sort_by_key(|&c| (std::cmp::Reverse(tree.node(c).size), c));
-    kids.into_iter()
-        .enumerate()
-        .map(|(i, c)| (c, HUES[i % HUES.len()]))
-        .collect()
-}
-
-/// Tone rule, in order: Unscanned, Recycle Bin (or inside it), system block, top-level hue.
-fn tone_rule(
-    tree: &Tree,
-    rules: &RuleContext,
-    hues: &HashMap<NodeId, f32>,
-    bin: Option<NodeId>,
-    id: NodeId,
-) -> Tone {
+/// Tone of a placed node: Unscanned, the type of a file, else the dominant
+/// type of a folder (`Other` when nothing below it is typed).
+fn tone_of(tree: &Tree, id: NodeId) -> Tone {
     if tree.node(id).kind == NodeKind::Unscanned {
         return Tone::Unscanned;
     }
-    if bin.is_some_and(|b| b == id || tree.is_ancestor(b, id)) {
-        return Tone::RecycleBin;
-    }
-    if let Verdict::Block(b) = verdict(tree, rules, id)
-        && b.is_system()
-    {
-        return Tone::System;
-    }
-    let hue = tree
-        .top_level_of(id)
-        .and_then(|t| hues.get(&t).copied())
-        .unwrap_or(HUES[0]);
-    Tone::Normal(hue)
+    let t = tree
+        .file_type(id)
+        .or_else(|| tree.dominant_type(id).map(|(t, _)| t));
+    Tone::Type(t.unwrap_or(FileType::Other))
 }
 
-/// Lays out `key.view_root` in `bounds` and precomputes tone, name and figures of
-/// every block. Takes a read view of the tree; call it under one `tree.read()`.
-pub fn build_layout(
-    tree: &Tree,
-    rules: &RuleContext,
-    key: LayoutKey,
-    bounds: Rect,
-    now: Instant,
-) -> CachedLayout {
+/// Lays out `key.view_root` in `bounds` and precomputes tone, container, name
+/// and figures of every block. Takes a read view of the tree; call it under one
+/// `tree.read()`.
+pub fn build_layout(tree: &Tree, key: LayoutKey, bounds: Rect, now: Instant) -> CachedLayout {
     let placed = layout(tree, key.view_root, bounds, &LayoutParams::default());
-    let hues = hue_map(tree);
     let bin = tree.recycle_bin();
-    // Tones of directories, reused by their children: a system block or the
-    // Recycle Bin always covers the whole subtree, so `verdict` is skipped there.
-    let mut dir_tones: HashMap<NodeId, Tone> = HashMap::new();
-    let mut tone_for = |id: NodeId| -> Tone {
-        if let Some(&t) = dir_tones.get(&id) {
-            return t;
-        }
-        let inherited = tree
-            .node(id)
-            .parent
-            .and_then(|p| dir_tones.get(&p).copied())
-            .filter(|t| matches!(t, Tone::System | Tone::RecycleBin));
-        let t = inherited.unwrap_or_else(|| tone_rule(tree, rules, &hues, bin, id));
-        if tree.node(id).kind == NodeKind::Dir {
-            dir_tones.insert(id, t);
-        }
-        t
+    let container_of = |id: NodeId| match bin {
+        Some(b) if b == id || tree.is_ancestor(b, id) => Container::RecycleBin,
+        _ => Container::Normal,
     };
     let shown: HashSet<NodeId> = placed
         .iter()
@@ -137,7 +99,9 @@ pub fn build_layout(
                 let n = tree.node(id);
                 let localized = n.kind == NodeKind::Unscanned || Some(id) == bin;
                 CachedItem {
-                    tone: tone_for(id),
+                    tone: tone_of(tree, id),
+                    container: container_of(id),
+                    dominant: tree.dominant_type(id),
                     name: if localized {
                         String::new()
                     } else {
@@ -167,7 +131,9 @@ pub fn build_layout(
                     .max()
                     .unwrap_or(pn.newest);
                 CachedItem {
-                    tone: tone_for(parent),
+                    tone: tone_of(tree, parent),
+                    container: container_of(parent),
+                    dominant: None,
                     name: String::new(),
                     size,
                     newest,
@@ -279,7 +245,9 @@ mod tests {
                 depth: 0,
                 header: true,
             },
-            tone: Tone::Normal(HUES[0]),
+            tone: Tone::Type(FileType::Other),
+            container: Container::Normal,
+            dominant: None,
             name: format!("n{id}"),
             size: 1,
             newest: 0,
@@ -304,15 +272,6 @@ mod tests {
         assert_eq!(label_mode(41., 17.), LabelMode::Hidden);
     }
 
-    fn ctx() -> RuleContext {
-        RuleContext {
-            windows_dir: r"C:\Windows".into(),
-            program_data: r"C:\ProgramData".into(),
-            users_dir: r"C:\Users".into(),
-            cloud_roots: Vec::new(),
-        }
-    }
-
     fn e(name: &str, kind: NodeKind, size: u64) -> EntryData {
         EntryData {
             name: name.into(),
@@ -329,49 +288,115 @@ mod tests {
         h: 600.,
     };
 
-    fn tone_of(l: &CachedLayout, id: NodeId) -> Tone {
+    fn build(t: &Tree) -> CachedLayout {
+        let k = LayoutKey {
+            generation: t.generation(),
+            view_root: t.root(),
+            size: (800, 600),
+        };
+        let l = build_layout(t, k, BOUNDS, Instant::now());
+        assert_eq!(l.key, k);
+        l
+    }
+
+    fn placed(l: &CachedLayout, id: NodeId) -> &CachedItem {
         l.items
             .iter()
             .find(|it| it.placed.item == Item::Node(id))
-            .map(|it| it.tone)
             .expect("item is placed")
     }
 
     #[test]
-    fn tones() {
+    fn tones_by_type() {
         let mut t = Tree::new(PathBuf::from(r"C:\"), 0);
         let root = t.root();
         let top = t.add_children(
             root,
-            vec![
-                e("Windows", NodeKind::Dir, 0),
-                e("Users", NodeKind::Dir, 0),
-                e("$Recycle.Bin", NodeKind::Dir, 0),
-            ],
+            vec![e("Users", NodeKind::Dir, 0), e("Windows", NodeKind::Dir, 0)],
         );
-        let (windows, users, bin) = (top[0], top[1], top[2]);
-        t.add_children(windows, vec![e("x", NodeKind::File, 100)]);
-        let y = t.add_children(users, vec![e("y", NodeKind::File, 100)])[0];
-        let z = t.add_children(bin, vec![e("z", NodeKind::File, 100)])[0];
+        let (users, windows) = (top[0], top[1]);
+        let a = t.add_children(users, vec![e("a.mkv", NodeKind::File, 100)])[0];
+        let c = t.add_children(windows, vec![e("c.dll", NodeKind::File, 30)])[0];
         t.set_unscanned(5);
         let unscanned = t
             .node(root)
             .children
             .iter()
             .copied()
-            .find(|&c| t.node(c).kind == NodeKind::Unscanned)
+            .find(|&n| t.node(n).kind == NodeKind::Unscanned)
             .unwrap();
-        let k = LayoutKey {
-            generation: t.generation(),
-            view_root: root,
-            size: (800, 600),
-        };
-        let l = build_layout(&t, &ctx(), k, BOUNDS, Instant::now());
-        assert_eq!(l.key, k);
-        assert_eq!(tone_of(&l, windows), Tone::System);
-        assert!(matches!(tone_of(&l, y), Tone::Normal(_)));
-        assert_eq!(tone_of(&l, z), Tone::RecycleBin);
-        assert_eq!(tone_of(&l, unscanned), Tone::Unscanned);
+        let l = build(&t);
+        assert_eq!(placed(&l, a).tone, Tone::Type(FileType::Media));
+        assert_eq!(placed(&l, c).tone, Tone::Type(FileType::System));
+        assert_eq!(placed(&l, unscanned).tone, Tone::Unscanned);
+        // Open folders: neutral container, dominant type kept for the tooltip.
+        let w = placed(&l, windows);
+        assert!(w.placed.header);
+        assert_eq!(w.container, Container::Normal);
+        assert_eq!(w.tone, Tone::Type(FileType::System));
+        assert_eq!(w.dominant, Some((FileType::System, 1.0)));
+        assert_eq!(placed(&l, a).dominant, None);
+    }
+
+    #[test]
+    fn closed_dir_uses_dominant() {
+        let mut t = Tree::new(PathBuf::from(r"D:\"), 0);
+        let root = t.root();
+        let top = t.add_children(
+            root,
+            vec![
+                e("big.bin", NodeKind::File, 1_000_000),
+                e("d", NodeKind::Dir, 0),
+            ],
+        );
+        let d = top[1];
+        let kids = t.add_children(
+            d,
+            vec![
+                e("a.zip", NodeKind::File, 2_000),
+                e("b.txt", NodeKind::File, 1_000),
+            ],
+        );
+        let l = build(&t);
+        let it = placed(&l, d);
+        assert_eq!(it.kind, NodeKind::Dir);
+        assert!(!it.placed.header, "too small to be opened");
+        assert_eq!(it.tone, Tone::Type(FileType::Archive));
+        let (ty, share) = it.dominant.expect("typed bytes");
+        assert_eq!(ty, FileType::Archive);
+        assert!((share - 2.0 / 3.0).abs() < 1e-6);
+        // A closed folder has no placed children.
+        assert!(
+            l.items
+                .iter()
+                .all(|it| !kids.iter().any(|&k| it.placed.item == Item::Node(k)))
+        );
+    }
+
+    #[test]
+    fn recycle_container() {
+        let mut t = Tree::new(PathBuf::from(r"C:\"), 0);
+        let root = t.root();
+        let top = t.add_children(
+            root,
+            vec![
+                e("$Recycle.Bin", NodeKind::Dir, 0),
+                e("Users", NodeKind::Dir, 0),
+            ],
+        );
+        let (bin, users) = (top[0], top[1]);
+        let sid = t.add_children(bin, vec![e("S-1-5-21", NodeKind::Dir, 0)])[0];
+        let x = t.add_children(sid, vec![e("x.zip", NodeKind::File, 100)])[0];
+        let y = t.add_children(users, vec![e("y.txt", NodeKind::File, 100)])[0];
+        let l = build(&t);
+        assert_eq!(placed(&l, bin).container, Container::RecycleBin);
+        let s = placed(&l, sid);
+        assert!(s.placed.header);
+        assert_eq!(s.container, Container::RecycleBin);
+        assert_eq!(placed(&l, users).container, Container::Normal);
+        // Files in the bin keep the colour of their type.
+        assert_eq!(placed(&l, x).tone, Tone::Type(FileType::Archive));
+        assert_eq!(placed(&l, y).tone, Tone::Type(FileType::Other));
     }
 
     #[test]
@@ -381,66 +406,35 @@ mod tests {
         let top = t.add_children(
             root,
             vec![
-                e("Windows", NodeKind::Dir, 0),
+                e("Downloads", NodeKind::Dir, 0),
                 e("$Recycle.Bin", NodeKind::Dir, 0),
             ],
         );
-        let (windows, bin) = (top[0], top[1]);
-        // 500 files of 30 are each far below the minimum area, together ~4 % of Windows.
-        let mut kids = vec![e("big", NodeKind::File, 360_000)];
+        let (downloads, bin) = (top[0], top[1]);
+        // 500 files of 30 are each far below the minimum area, together ~4 % of
+        // Downloads. They are `Other`; the folder is mostly `Archive`.
+        let mut kids = vec![e("big.zip", NodeKind::File, 360_000)];
         for i in 0..500 {
             kids.push(EntryData {
                 newest: 40 + i,
-                ..e(&format!("s{i}"), NodeKind::File, 30)
+                ..e(&format!("s{i}.txt"), NodeKind::File, 30)
             });
         }
-        t.add_children(windows, kids);
+        t.add_children(downloads, kids);
         t.add_children(bin, vec![e("z", NodeKind::File, 100_000)]);
-        let k = LayoutKey {
-            generation: t.generation(),
-            view_root: root,
-            size: (800, 600),
-        };
-        let l = build_layout(&t, &ctx(), k, BOUNDS, Instant::now());
+        let l = build(&t);
         let group = l
             .items
             .iter()
             .find(
-                |it| matches!(it.placed.item, Item::SmallGroup { parent, .. } if parent == windows),
+                |it| matches!(it.placed.item, Item::SmallGroup { parent, .. } if parent == downloads),
             )
             .expect("small files are grouped");
-        assert_eq!(group.tone, Tone::System);
+        assert_eq!(group.tone, Tone::Type(FileType::Archive));
+        assert_eq!(group.kind, NodeKind::File);
         assert_eq!((group.files, group.size, group.newest), (500, 15_000, 539));
         assert!(group.name.is_empty());
-        let bin_item = l
-            .items
-            .iter()
-            .find(|it| it.placed.item == Item::Node(bin))
-            .unwrap();
-        assert!(bin_item.name.is_empty());
-        let w = l
-            .items
-            .iter()
-            .find(|it| it.placed.item == Item::Node(windows))
-            .unwrap();
-        assert_eq!(w.name, "Windows");
-    }
-
-    #[test]
-    fn hue_map_by_size() {
-        let mut t = Tree::new(PathBuf::from(r"D:\"), 0);
-        let root = t.root();
-        let ids = t.add_children(
-            root,
-            vec![
-                e("a", NodeKind::File, 10),
-                e("b", NodeKind::File, 30),
-                e("c", NodeKind::File, 20),
-            ],
-        );
-        let h = hue_map(&t);
-        assert_eq!(h[&ids[1]], HUES[0]);
-        assert_eq!(h[&ids[2]], HUES[1]);
-        assert_eq!(h[&ids[0]], HUES[2]);
+        assert!(placed(&l, bin).name.is_empty());
+        assert_eq!(placed(&l, downloads).name, "Downloads");
     }
 }
