@@ -4,6 +4,7 @@ use crate::i18n::Lang;
 use crate::session::{Session, Subject, can_start_delete};
 use crate::system;
 use crate::theme;
+use crate::treemap::anim::TreemapAnim;
 use crate::treemap::{self, CachedLayout};
 use crate::ui;
 use crate::ui::context_menu::{self, DeleteRow, MenuAction, menu_model};
@@ -27,6 +28,7 @@ pub struct SnooprApp {
     pub session: Option<Session>,
     /// Treemap layout of the current session; reset when the session changes.
     pub layout_cache: Option<CachedLayout>,
+    pub treemap_anim: TreemapAnim,
     /// Whether the process runs as administrator (queried once).
     pub elevated: bool,
     /// The open deletion dialog; while it is open the rest of the window is inert.
@@ -94,6 +96,7 @@ impl SnooprApp {
             volumes: list_fixed_volumes(),
             session: None,
             layout_cache: None,
+            treemap_anim: TreemapAnim::new(crate::anim::motion_enabled()),
             elevated: system::is_elevated(),
             modal: None,
             menu_target: None,
@@ -111,6 +114,7 @@ impl SnooprApp {
         }
         self.session = Some(Session::start(target, &self.rules));
         self.layout_cache = None;
+        self.treemap_anim.reset();
         self.modal = None;
     }
 
@@ -457,7 +461,14 @@ impl eframe::App for SnooprApp {
         };
         panel.show(ui, |ui| {
             if let Some(s) = &mut self.session {
-                let ev = treemap::show(ui, s, &mut self.layout_cache, &self.rules, self.lang);
+                let ev = treemap::show(
+                    ui,
+                    s,
+                    &mut self.layout_cache,
+                    &mut self.treemap_anim,
+                    &self.rules,
+                    self.lang,
+                );
                 if modal_open {
                     self.menu_target = None;
                     return;

@@ -32,7 +32,6 @@ pub fn progress(start: Instant, now: Instant, d: Duration) -> f32 {
 }
 
 /// Whether the UI moves: Windows' "Show animations in Windows", read once.
-#[allow(dead_code)] // used by the painter (task 4)
 pub fn motion_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(crate::system::animations_enabled)

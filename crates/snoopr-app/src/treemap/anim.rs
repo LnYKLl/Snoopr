@@ -178,9 +178,13 @@ impl Transition {
             rect: target,
             alpha: 1.0,
         };
-        match (self.clock.eased(now), self.from.get(&key)) {
-            (Some(t), Some(&from)) => mix(from, end, t),
-            _ => end,
+        // Once finished, no lookup: the idle path is a single clock check.
+        let Some(t) = self.clock.eased(now) else {
+            return end;
+        };
+        match self.from.get(&key) {
+            Some(&from) => mix(from, end, t),
+            None => end,
         }
     }
 }
@@ -204,13 +208,11 @@ fn reflow_exit(tree: &Tree, key: AnimKey, start: Rect, targets: &HashMap<AnimKey
 
 /// The treemap's running transition, if any. Hit testing never looks at it:
 /// it always uses the final layout.
-#[allow(dead_code)] // used by the painter (task 4)
 pub struct Animator {
     enabled: bool,
     transition: Option<Transition>,
 }
 
-#[allow(dead_code)] // used by the painter (task 4)
 impl Animator {
     pub fn new(enabled: bool) -> Self {
         Animator {
@@ -383,6 +385,141 @@ impl Animator {
         self.transition
             .as_ref()
             .is_some_and(|tr| tr.clock.eased(now).is_some())
+    }
+}
+
+/// Hover highlight fade duration.
+pub const HOVER: Duration = Duration::from_millis(120);
+/// Selection outline glide duration.
+pub const GLIDE: Duration = Duration::from_millis(160);
+
+/// Hover highlight levels: the hovered key rises to 1, the others fall to 0 and are dropped.
+pub struct HoverFade {
+    enabled: bool,
+    levels: Vec<(AnimKey, f32)>,
+}
+
+impl HoverFade {
+    pub fn new(enabled: bool) -> Self {
+        HoverFade {
+            enabled,
+            levels: Vec::new(),
+        }
+    }
+
+    /// Moves every level by `dt` seconds towards its goal.
+    pub fn update(&mut self, hovered: Option<AnimKey>, dt: f32) {
+        if !self.enabled {
+            self.levels.clear();
+            self.levels.extend(hovered.map(|k| (k, 1.0)));
+            return;
+        }
+        if let Some(k) = hovered
+            && !self.levels.iter().any(|(l, _)| *l == k)
+        {
+            self.levels.push((k, 0.0));
+        }
+        let step = dt / HOVER.as_secs_f32();
+        for (k, v) in &mut self.levels {
+            *v = if Some(*k) == hovered {
+                (*v + step).min(1.0)
+            } else {
+                (*v - step).max(0.0)
+            };
+        }
+        self.levels.retain(|(_, v)| *v > 1e-4);
+    }
+
+    pub fn level(&self, key: AnimKey) -> f32 {
+        self.levels
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(0.0, |(_, v)| *v)
+    }
+
+    /// Some level is still between 0 and 1.
+    pub fn is_animating(&self) -> bool {
+        self.levels.iter().any(|(_, v)| *v < 1.0 - 1e-4)
+    }
+}
+
+/// The selection outline: glides from the previous selection to the new one.
+pub struct Glide {
+    enabled: bool,
+    key: Option<AnimKey>,
+    /// Where the outline was when the selection changed.
+    from: Option<Rect>,
+    start: Instant,
+    /// What was returned last, the start of the next glide.
+    last: Option<Rect>,
+}
+
+impl Glide {
+    pub fn new(enabled: bool) -> Self {
+        Glide {
+            enabled,
+            key: None,
+            from: None,
+            start: Instant::now(),
+            last: None,
+        }
+    }
+
+    /// Where to draw the outline of `key`, whose block is at `target` now.
+    /// Call once per frame.
+    pub fn rect(&mut self, key: Option<AnimKey>, target: Rect, now: Instant) -> Rect {
+        if !self.enabled {
+            return target;
+        }
+        if key != self.key {
+            self.from = if key.is_some() { self.last } else { None };
+            self.start = now;
+            self.key = key;
+        }
+        let shown = match (self.from, key) {
+            (Some(from), Some(_)) => {
+                let p = progress(self.start, now, GLIDE);
+                lerp_rect(from, target, ease_out_cubic(p))
+            }
+            _ => target,
+        };
+        self.last = key.map(|_| shown);
+        shown
+    }
+
+    pub fn is_animating(&self, now: Instant) -> bool {
+        self.enabled
+            && self.from.is_some()
+            && self.key.is_some()
+            && progress(self.start, now, GLIDE) < 1.0
+    }
+}
+
+/// Everything the treemap animates, owned by the app and reset with the session.
+pub struct TreemapAnim {
+    pub layout: Animator,
+    pub hover: HoverFade,
+    pub glide: Glide,
+    pub last_frame: Option<Instant>,
+}
+
+impl TreemapAnim {
+    pub fn new(enabled: bool) -> Self {
+        TreemapAnim {
+            layout: Animator::new(enabled),
+            hover: HoverFade::new(enabled),
+            glide: Glide::new(enabled),
+            last_frame: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.layout.reset();
+        self.hover.levels.clear();
+        self.glide.key = None;
+        self.glide.from = None;
+        self.glide.last = None;
+        self.last_frame = None;
     }
 }
 
@@ -1262,5 +1399,66 @@ mod tests {
         on.on_rebuild(&t, Some(&l1), &many(MAX_ANIMATED - 1), AREA, t0);
         assert!(!on.is_animating(t0), "5999 blocks + 2 ghosts");
         assert!(on.ghosts(t0).is_empty());
+    }
+
+    #[test]
+    fn hover_fade_rises_and_falls() {
+        let key = AnimKey::Node(NodeId(7));
+        let mut h = HoverFade::new(true);
+        assert_eq!(h.level(key), 0.0);
+        h.update(Some(key), 0.06);
+        assert!((h.level(key) - 0.5).abs() < 1e-3);
+        assert!(h.is_animating());
+        h.update(Some(key), 0.06);
+        assert!((h.level(key) - 1.0).abs() < 1e-3);
+        assert!(!h.is_animating(), "settled at 1");
+        h.update(None, 0.06);
+        assert!((h.level(key) - 0.5).abs() < 1e-3);
+        assert!(h.is_animating());
+        h.update(None, 0.06);
+        assert_eq!(h.level(key), 0.0);
+        assert!(!h.is_animating());
+    }
+
+    #[test]
+    fn hover_fade_off_is_instant() {
+        let key = AnimKey::Node(NodeId(7));
+        let mut h = HoverFade::new(false);
+        h.update(Some(key), 0.001);
+        assert_eq!(h.level(key), 1.0);
+        h.update(None, 0.001);
+        assert_eq!(h.level(key), 0.0);
+        assert!(!h.is_animating());
+    }
+
+    #[test]
+    fn glide_moves_between_selections() {
+        let (k1, k2) = (AnimKey::Node(NodeId(1)), AnimKey::Node(NodeId(2)));
+        let (r1, r2) = (r(0., 0., 10., 10.), r(100., 0., 20., 10.));
+        let mut g = Glide::new(true);
+        let t0 = Instant::now();
+        assert_eq!(g.rect(Some(k1), r1, t0), r1);
+        assert!(!g.is_animating(t0));
+        // New key: starts on the old rectangle, ends on the new target.
+        assert_eq!(g.rect(Some(k2), r2, t0), r1);
+        assert!(g.is_animating(t0));
+        let mid = g.rect(Some(k2), r2, t0 + GLIDE / 2);
+        assert!(mid.x > 0. && mid.x < 100.);
+        assert_eq!(g.rect(Some(k2), r2, t0 + GLIDE), r2);
+        assert!(!g.is_animating(t0 + GLIDE));
+        // Same key, moving target (a reflow): follows it without delay.
+        let r3 = r(300., 0., 20., 10.);
+        assert_eq!(g.rect(Some(k2), r3, t0 + GLIDE * 2), r3);
+        assert!(!g.is_animating(t0 + GLIDE * 2));
+    }
+
+    #[test]
+    fn glide_off_returns_the_target() {
+        let (k1, k2) = (AnimKey::Node(NodeId(1)), AnimKey::Node(NodeId(2)));
+        let mut g = Glide::new(false);
+        let t0 = Instant::now();
+        assert_eq!(g.rect(Some(k1), r(0., 0., 1., 1.), t0), r(0., 0., 1., 1.));
+        assert_eq!(g.rect(Some(k2), r(5., 5., 1., 1.), t0), r(5., 5., 1., 1.));
+        assert!(!g.is_animating(t0));
     }
 }
