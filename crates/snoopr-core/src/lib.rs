@@ -5,3 +5,4 @@ pub mod layout;
 pub mod rules;
 pub mod scan;
 pub mod tree;
+pub mod volume;
