@@ -1,5 +1,5 @@
 //! The "freed" pill: appears over the treemap when the session's freed total
-//! grows, counts up to the new total, holds, then fades out.
+//! grows, counts up from 0 to what was just freed, holds, then fades out.
 
 use crate::anim::{ease_out_cubic, progress};
 use crate::i18n::{Lang, freed};
@@ -26,6 +26,10 @@ pub struct ToastView {
 
 pub struct FreedToast {
     last_freed: u64,
+    /// The session total when the pill last became visible: the pill shows
+    /// what was freed since then, counting from 0.
+    base: u64,
+    /// The value to count up to (`last_freed - base`).
     target: u64,
     from_value: u64,
     count_start: Instant,
@@ -39,8 +43,9 @@ impl FreedToast {
     pub fn new(freed: u64, enabled: bool) -> Self {
         FreedToast {
             last_freed: freed,
-            target: freed,
-            from_value: freed,
+            base: freed,
+            target: 0,
+            from_value: 0,
             count_start: Instant::now(),
             appear: None,
             last_bump: None,
@@ -59,13 +64,14 @@ impl FreedToast {
             return;
         }
         let was_visible = self.view(now).is_some();
-        self.from_value = if was_visible {
-            self.value_at(now)
+        if was_visible {
+            self.from_value = self.value_at(now);
         } else {
-            self.last_freed
-        };
+            self.base = self.last_freed;
+            self.from_value = 0;
+        }
         self.last_freed = freed;
-        self.target = freed;
+        self.target = freed - self.base;
         self.count_start = now;
         self.last_bump = Some(now);
         if !was_visible {
@@ -208,6 +214,18 @@ mod tests {
         assert_eq!(t.view(t0 + ms(1700)).unwrap().value, 1500);
         let v = t.view(t0 + ms(4400)).unwrap();
         assert_eq!((v.alpha, v.dy), (1.0, 0.0));
+    }
+
+    #[test]
+    fn a_new_pill_counts_what_was_just_freed_from_zero() {
+        let t0 = Instant::now();
+        let mut t = FreedToast::new(0, true);
+        t.update(1000, t0);
+        // The first pill has vanished by then.
+        assert_eq!(t.view(t0 + ms(5000)), None);
+        t.update(1500, t0 + ms(5000));
+        assert_eq!(t.view(t0 + ms(5000)).unwrap().value, 0);
+        assert_eq!(t.view(t0 + ms(5700)).unwrap().value, 500);
     }
 
     #[test]
