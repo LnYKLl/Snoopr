@@ -27,13 +27,44 @@ fn bin_is_empty(_size: i64, items: i64) -> bool {
     items == 0
 }
 
-/// Convertit un HRESULT en raison d'échec.
+/// Convertit un HRESULT en raison d'échec. Les codes `0x8027_xxxx` sont ceux
+/// du moteur de copie du Shell (COPYENGINE_E_*).
 pub fn reason_from_hresult(hr: i32) -> FailureReason {
     match hr as u32 {
-        0x8007_0020 | 0x8007_0021 => FailureReason::InUse,
-        0x8007_0005 => FailureReason::AccessDenied,
-        0x8007_04C7 => FailureReason::Cancelled,
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, COPYENGINE_E_SHARING_VIOLATION_SRC
+        0x8007_0020 | 0x8007_0021 | 0x8027_0027 => FailureReason::InUse,
+        // E_ACCESSDENIED, COPYENGINE_E_ACCESS_DENIED_SRC
+        0x8007_0005 | 0x8027_0021 => FailureReason::AccessDenied,
+        // ERROR_CANCELLED, COPYENGINE_E_USER_CANCELLED
+        0x8007_04C7 | 0x8027_0000 => FailureReason::Cancelled,
         other => FailureReason::Other(format!("HRESULT 0x{other:08X}")),
+    }
+}
+
+/// Ce qu'`IFileOperation` a rapporté pour un élément.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Report {
+    /// `PerformOperations` a échoué avec ce HRESULT.
+    Failed(i32),
+    /// Réussi, mais une opération a été abandonnée : l'utilisateur a refusé
+    /// la suppression définitive proposée par Windows (FOF_WANTNUKEWARNING).
+    Aborted,
+    /// Réussi, rien d'abandonné.
+    Done,
+}
+
+/// Le résultat d'un envoi, lu dans cet ordre : l'erreur, puis l'abandon,
+/// puis seulement `gone` (l'élément n'est plus sur le disque).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn outcome(report: Report, gone: impl FnOnce() -> bool) -> Result<(), FailureReason> {
+    match report {
+        Report::Failed(hr) => Err(reason_from_hresult(hr)),
+        Report::Aborted => Err(FailureReason::Cancelled),
+        Report::Done if gone() => Ok(()),
+        Report::Done => Err(FailureReason::Other(
+            "item still exists after recycle".into(),
+        )),
     }
 }
 
@@ -49,7 +80,7 @@ mod imp {
     use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
     use windows::Win32::UI::Shell::{
         FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
-        FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName,
+        FOFX_EARLYFAILURE, FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName,
         SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND, SHEmptyRecycleBinW, SHQUERYRBINFO,
         SHQueryRecycleBinW,
     };
@@ -136,41 +167,49 @@ mod imp {
         }
     }
 
-    /// `Ok(true)` si Windows a signalé une opération annulée.
-    fn do_recycle(path: &Path) -> windows::core::Result<bool> {
+    /// Envoie `path` à la corbeille. `Err` : l'opération n'a pas pu être
+    /// préparée, rien n'a été tenté.
+    fn do_recycle(path: &Path) -> windows::core::Result<Report> {
         unsafe {
             let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
             // FOF_WANTNUKEWARNING : filet de sécurité, Windows demande avant
-            // toute destruction définitive non prévue.
+            // toute destruction définitive non prévue. FOFX_EARLYFAILURE :
+            // sans lui, FOF_NOERRORUI fait traiter toute erreur comme un
+            // « Ignorer » (S_OK puis « abandonné ») ; avec lui, l'erreur
+            // revient de `PerformOperations`.
             op.SetOperationFlags(
                 FOF_ALLOWUNDO
                     | FOF_NOCONFIRMATION
                     | FOF_SILENT
                     | FOF_NOERRORUI
-                    | FOF_WANTNUKEWARNING,
+                    | FOF_WANTNUKEWARNING
+                    | FOFX_EARLYFAILURE,
             )?;
             let w = wide_nul(path.as_os_str().encode_wide());
             let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None)?;
             op.DeleteItem(&item, None)?;
-            op.PerformOperations()?;
-            Ok(op.GetAnyOperationsAborted()?.as_bool())
+            if let Err(e) = op.PerformOperations() {
+                return Ok(Report::Failed(e.code().0));
+            }
+            // Illisible : on se fie au disque (étape suivante de `outcome`).
+            let aborted = op.GetAnyOperationsAborted().is_ok_and(|b| b.as_bool());
+            Ok(if aborted {
+                Report::Aborted
+            } else {
+                Report::Done
+            })
         }
     }
 
     pub fn recycle(path: &Path) -> Result<(), FailureReason> {
         let _com = ComGuard::new();
-        let res = do_recycle(path);
-        if matches!(res, Ok(true)) {
-            return Err(FailureReason::Cancelled);
-        }
-        if std::fs::symlink_metadata(path).is_err() {
-            return Ok(());
-        }
-        match res {
+        let gone =
+            || std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == io::ErrorKind::NotFound);
+        match do_recycle(path) {
+            Ok(report) => outcome(report, gone),
+            // Rien n'a été tenté : un élément déjà absent est un succès.
+            Err(_) if gone() => Ok(()),
             Err(e) => Err(reason_from_hresult(e.code().0)),
-            Ok(_) => Err(FailureReason::Other(
-                "item still exists after recycle".into(),
-            )),
         }
     }
 
@@ -252,9 +291,29 @@ mod tests {
         assert_eq!(reason_from_hresult(0x8007_0021u32 as i32), F::InUse);
         assert_eq!(reason_from_hresult(0x8007_0005u32 as i32), F::AccessDenied);
         assert_eq!(reason_from_hresult(0x8007_04C7u32 as i32), F::Cancelled);
+        // Codes du moteur de copie, renvoyés avec FOFX_EARLYFAILURE.
+        assert_eq!(reason_from_hresult(0x8027_0027u32 as i32), F::InUse);
+        assert_eq!(reason_from_hresult(0x8027_0021u32 as i32), F::AccessDenied);
+        assert_eq!(reason_from_hresult(0x8027_0000u32 as i32), F::Cancelled);
         assert!(matches!(
             reason_from_hresult(0x8000_4005u32 as i32),
             F::Other(_)
+        ));
+    }
+
+    /// Ordre de lecture : l'erreur de `PerformOperations`, puis l'abandon,
+    /// puis seulement la disparition de l'élément.
+    #[test]
+    fn report_is_read_in_order() {
+        use crate::delete::FailureReason as F;
+        let never = || -> bool { panic!("the disk is not read") };
+        let sharing = Report::Failed(0x8027_0027u32 as i32);
+        assert_eq!(outcome(sharing, never), Err(F::InUse));
+        assert_eq!(outcome(Report::Aborted, never), Err(F::Cancelled));
+        assert_eq!(outcome(Report::Done, || true), Ok(()));
+        assert!(matches!(
+            outcome(Report::Done, || false),
+            Err(F::Other(m)) if m.contains("still exists")
         ));
     }
 
