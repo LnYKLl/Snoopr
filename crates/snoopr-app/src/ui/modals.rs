@@ -91,7 +91,8 @@ fn plan(subject: Subject, p: Plan) -> Step {
 }
 
 /// Maps a click in dialog `m` to the next step. `items` are the deletable
-/// basket items `(id, size)`; `cap` is read only for the Recycle Bin choice.
+/// items of the dialog's subject `(id, size)`; `cap` is read only for the
+/// Recycle Bin choice.
 /// Only the confirm buttons of the matching dialog delete anything, and the
 /// Recycle Bin choice never plans a permanent deletion: items that do not fit
 /// open the "too big" question first (spec §7.2).
@@ -790,8 +791,8 @@ mod tests {
             path: PathBuf::from(r"C:\x"),
             reason: FailureReason::InUse,
         }]);
-        let too_big = Modal::TooBig {
-            subject: Subject::Basket,
+        let too_big = |subject| Modal::TooBig {
+            subject,
             fit: vec![A],
             too_big: vec![B],
         };
@@ -807,16 +808,16 @@ mod tests {
         let allowed = |m: &Modal, a: ModalAction| {
             matches!(
                 (m, a),
-                (
-                    Modal::ConfirmDelete(Subject::Basket),
-                    A::Recycle | A::DeletePermanently
-                ) | (Modal::TooBig { .. }, A::TooBigDeleteAll | A::TooBigSkip)
+                (Modal::ConfirmDelete(_), A::Recycle | A::DeletePermanently)
+                    | (Modal::TooBig { .. }, A::TooBigDeleteAll | A::TooBigSkip)
                     | (Modal::ConfirmEmptyBin, A::EmptyBin)
             )
         };
         for m in [
             Modal::ConfirmDelete(Subject::Basket),
-            too_big,
+            Modal::ConfirmDelete(Subject::One(A)),
+            too_big(Subject::Basket),
+            too_big(Subject::One(A)),
             Modal::ConfirmEmptyBin,
             failures,
         ] {

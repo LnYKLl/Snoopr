@@ -37,15 +37,16 @@ const LEAF_RADIUS: f32 = 4.0;
 const HEADER_H: f32 = 16.0;
 const HOVER_MIX: f32 = 0.12;
 const HATCH_STEP: f32 = 8.0;
-/// Opacity of `theme::dimmed` (89 / 255), applied to the labels of dimmed leaves.
-/// Longest frame step fed to the hover fade, so a stall does not skip it.
+/// The selection glide's target when nothing is selected (then never drawn).
 const ZERO: core_layout::Rect = core_layout::Rect {
     x: 0.0,
     y: 0.0,
     w: 0.0,
     h: 0.0,
 };
+/// Longest frame step fed to the hover fade, so a stall does not skip it.
 const MAX_DT: f32 = 0.1;
+/// Opacity of `theme::dimmed` (89 / 255), applied to the labels of dimmed leaves.
 const DIM_ALPHA: f32 = 0.35;
 
 pub struct TreemapEvents {

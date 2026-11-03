@@ -32,9 +32,10 @@ pub struct View {
     pub age: AgeFilter,
 }
 
-/// A deletion can start only when nothing else runs and the basket holds something.
-pub fn can_start_delete(busy: bool, basket_len: usize) -> bool {
-    !busy && basket_len > 0
+/// A deletion can start only when nothing else runs and its subject has
+/// `items` deletable items.
+pub fn can_start_delete(busy: bool, items: usize) -> bool {
+    !busy && items > 0
 }
 
 /// What a deletion is about: the whole basket, or one item that never enters it.
