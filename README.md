@@ -20,7 +20,7 @@ Snoopr is a free, open-source disk-usage visualizer for Windows. It scans a driv
 
 Nothing is deleted without going through the confirmation window.
 
-- Guard-rails: critical items cannot be deleted, and the button is disabled with an explanation. This covers drive roots, the Windows folder, Program Files, WindowsApps, ProgramData, `pagefile.sys`, `hiberfil.sys`, `System Volume Information`, user profile roots, `AppData` itself and its Microsoft/Packages folders, `Windows.old` and others. Rules apply to every drive.
+- Guard-rails: critical items cannot be deleted, and the button is disabled with an explanation. This covers drive roots, the Windows folder, Program Files, WindowsApps, ProgramData, `pagefile.sys`, `hiberfil.sys`, `System Volume Information`, user profile roots, `AppData` itself and its Microsoft/Packages folders, `Windows.old` and others. Name-based rules (`Program Files`, `WindowsApps`, `pagefile.sys`/`hiberfil.sys`/`swapfile.sys`, `System Volume Information`, `Recovery`, `Windows.old`…) apply on every drive. The Windows folder, `ProgramData` and user-profile rules apply to the system's own folders, found through the Windows known folders.
 - Warnings (deletion allowed): game launchers' folders, cloud-synced folders (the deletion also happens in the cloud), other `AppData` subfolders, `.vhdx`/`.vhd` virtual disks and Outlook `.pst`/`.ost` files.
 - Recycle bin by default: "Move to Recycle Bin" is the default action. An item that cannot go to the bin is never permanently deleted silently. You get a single question to delete it permanently or skip it.
 - Permanent deletion is a separate, explicit button and is irreversible. Failures are listed afterwards with a plain-language reason.
@@ -28,7 +28,7 @@ Nothing is deleted without going through the confirmation window.
 
 ## Building
 
-Requirements: Windows 10/11 x64 and Rust 1.85 or later (edition 2024).
+Requirements: Windows 10/11 x64 and Rust 1.95 or later (edition 2024).
 
 ```
 cargo build --release
