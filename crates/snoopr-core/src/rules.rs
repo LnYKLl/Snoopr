@@ -1,7 +1,8 @@
 //! Garde-fous : decide si un chemin peut etre supprime (Allow), avec
 //! avertissement (Warn) ou jamais (Block).
 
-use std::path::{Component, Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf, Prefix};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Block {
@@ -62,6 +63,17 @@ pub struct RuleContext {
     pub cloud_roots: Vec<PathBuf>,
 }
 
+/// `C$` -> `c:` : le partage administratif d'un hôte est la racine de ce
+/// disque sur cet hôte (`\\localhost\C$` est donc C: lui-même).
+fn admin_share_drive(share: &OsStr) -> Option<String> {
+    match share.to_str()?.as_bytes() {
+        [letter, b'$'] if letter.is_ascii_alphabetic() => {
+            Some(format!("{}:", letter.to_ascii_lowercase() as char))
+        }
+        _ => None,
+    }
+}
+
 /// Composants en minuscules : le prefixe de lecteur puis les composants
 /// normaux. Renvoie `None` si le chemin n'est pas absolu normalise (pas de
 /// prefixe suivi d'une racine, ou composant `..`) : l'appelant bloque alors.
@@ -70,12 +82,20 @@ fn parts(path: &Path) -> Option<Vec<String>> {
     let Component::Prefix(p) = it.next()? else {
         return None;
     };
-    let s = p.as_os_str().to_string_lossy().to_lowercase();
-    let s = s
-        .strip_prefix(r"\\?\")
-        .or_else(|| s.strip_prefix(r"\\.\"))
-        .unwrap_or(&s)
-        .to_owned();
+    // Un partage administratif (`\\hôte\C$`) est lu comme son disque, pour
+    // que les règles système s'y appliquent aussi (alias de C: via le réseau
+    // local ; sur un autre hôte, ce n'est que plus strict).
+    let admin = match p.kind() {
+        Prefix::UNC(_, share) | Prefix::VerbatimUNC(_, share) => admin_share_drive(share),
+        _ => None,
+    };
+    let s = admin.unwrap_or_else(|| {
+        let s = p.as_os_str().to_string_lossy().to_lowercase();
+        s.strip_prefix(r"\\?\")
+            .or_else(|| s.strip_prefix(r"\\.\"))
+            .unwrap_or(&s)
+            .to_owned()
+    });
     let mut out = vec![s];
     if !matches!(it.next()?, Component::RootDir) {
         return None;
@@ -378,6 +398,17 @@ mod tests {
             (r"Windows\System32", Block(B::DriveRoot)),
             (r"\\.\C:\Windows", Block(B::WindowsDir)),
             (r"\\?\C:\Program Files\X", Block(B::ProgramFiles)),
+            // Partage administratif : `\\hôte\C$` est la racine de C: de cet hôte.
+            (r"\\localhost\C$", Block(B::DriveRoot)),
+            (r"\\localhost\C$\Windows\System32", Block(B::WindowsDir)),
+            (r"\\127.0.0.1\c$\Users\lenny", Block(B::ProfileRoot)),
+            (r"\\localhost\C$\ProgramData\X", Block(B::ProgramData)),
+            (
+                r"\\?\UNC\localhost\C$\Users\lenny\AppData\Local\Microsoft",
+                Block(B::WindowsUserData),
+            ),
+            (r"\\srv\share\Program Files\X", Block(B::ProgramFiles)),
+            (r"\\srv\share\Data\movie.mkv", Allow),
         ];
         for (p, v) in cases {
             assert_eq!(classify(Path::new(p), &ctx()), *v, "{p}");

@@ -15,7 +15,7 @@ use snoopr_core::filetype::root_context;
 use snoopr_core::rules::RuleContext;
 use snoopr_core::scan::{ScanHandle, start_scan};
 use snoopr_core::tree::{EntryData, NodeId, NodeKind, SharedTree, Tree};
-use snoopr_core::volume::{update_unscanned, volume_root_of, volume_usage};
+use snoopr_core::volume::{canonical_target, update_unscanned, volume_root_of, volume_usage};
 use std::collections::VecDeque;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -211,7 +211,19 @@ impl Session {
     }
 
     /// Starts scanning `target` on worker threads; returns immediately.
+    ///
+    /// Every target (command line, folder picker, drive card, rescan) is first
+    /// resolved to its real path ([`canonical_target`]): the safety rules read
+    /// paths as text, so an alias such as a SUBST drive, a junction or an 8.3
+    /// name must never reach them. A target that cannot be resolved (for
+    /// instance a missing path) is not scanned: the session stays empty.
     pub fn start(target: PathBuf, rules: &RuleContext) -> Session {
+        let Some(target) = canonical_target(&target) else {
+            let tree = empty_tree(&target, 0, rules);
+            let mut s = Session::new(target, tree, None, rules.clone());
+            s.scan_time = Some(Duration::ZERO);
+            return s;
+        };
         let tree = empty_tree(&target, mtime_secs(&target), rules);
         let mut s = Session::new(target.clone(), tree, None, rules.clone());
         s.disk_total = volume_usage(&target).map_or(0, |u| u.0);
@@ -612,6 +624,35 @@ mod tests {
         assert_eq!(t.file_type(f), Some(FileType::System));
         let t = empty_tree(Path::new(r"D:\Data"), 0, &rules);
         assert_eq!(t.node(t.root()).ctx, Context::None);
+    }
+
+    /// The target is resolved before anything else (spec §8: the safety rules
+    /// must see the real path, not an alias such as a SUBST drive).
+    #[test]
+    fn start_scans_the_resolved_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        let real = canonical_target(&dir.path().join("a")).unwrap();
+        let messy = dir.path().join(".").join("a").join("b").join("..");
+        let mut s = Session::start(messy, &test_rules());
+        assert_eq!(s.target, real);
+        assert_eq!(s.tree.read().unwrap().root_path(), real);
+        wait_idle(&mut s);
+        let t = s.tree.read().unwrap();
+        assert!(t.child_by_name(t.root(), "b".as_ref()).is_some());
+    }
+
+    /// A target that cannot be resolved is not scanned at all.
+    #[test]
+    fn start_on_an_unresolvable_target_scans_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let s = Session::start(missing.clone(), &test_rules());
+        assert!(s.scan.is_none() && !s.is_busy());
+        assert_eq!(s.target, missing);
+        assert_eq!(s.scan_time, Some(Duration::ZERO));
+        let t = s.tree.read().unwrap();
+        assert!(t.node(t.root()).children.is_empty());
     }
 
     #[test]

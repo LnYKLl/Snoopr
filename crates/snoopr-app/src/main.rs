@@ -12,7 +12,8 @@ mod ui;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// First positional argument after the program name.
+/// First positional argument after the program name, as typed (relative,
+/// `/` separators…): `Session::start` resolves it to the real path.
 pub fn parse_target(mut args: impl Iterator<Item = OsString>) -> Option<PathBuf> {
     args.nth(1).map(PathBuf::from)
 }
