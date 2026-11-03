@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Superpowers Brainstorming</title>
+  <style>
+    /*
+     * BRAINSTORM COMPANION FRAME TEMPLATE
+     *
+     * This template provides a consistent frame with:
+     * - OS-aware light/dark theming
+     * - Header branding and connection status
+     * - Scrollable main content area
+     * - CSS helpers for common UI patterns
+     *
+     * Content is injected via placeholder comment in #frame-content.
+     */
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+
+    /* ===== THEME VARIABLES ===== */
+    :root {
+      --bg-primary: #f5f5f7;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #e5e5e7;
+      --border: #d1d1d6;
+      --text-primary: #1d1d1f;
+      --text-secondary: #86868b;
+      --text-tertiary: #aeaeb2;
+      --accent: #0071e3;
+      --accent-hover: #0077ed;
+      --success: #34c759;
+      --warning: #ff9f0a;
+      --error: #ff3b30;
+      --selected-bg: #e8f4fd;
+      --selected-border: #0071e3;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-primary: #1d1d1f;
+        --bg-secondary: #2d2d2f;
+        --bg-tertiary: #3d3d3f;
+        --border: #424245;
+        --text-primary: #f5f5f7;
+        --text-secondary: #86868b;
+        --text-tertiary: #636366;
+        --accent: #0a84ff;
+        --accent-hover: #409cff;
+        --selected-bg: rgba(10, 132, 255, 0.15);
+        --selected-border: #0a84ff;
+      }
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+    }
+
+    /* ===== FRAME STRUCTURE ===== */
+    .brand { display: flex; align-items: center; min-width: 0; overflow: hidden; color: var(--text-secondary); line-height: 1; }
+    .brand a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 0.5rem; min-width: 0; max-width: 100%; line-height: 1; }
+    .brand-copy { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1; transform: translateY(-1px); }
+    .brand-logo { display: block; height: 1em; width: auto; max-width: 180px; flex-shrink: 0; filter: invert(1); }
+    @media (prefers-color-scheme: dark) {
+      .brand-logo { filter: none; }
+    }
+    .status { font-size: 0.7rem; color: var(--status-color, var(--success)); display: flex; align-items: center; gap: 0.4rem; justify-self: end; white-space: nowrap; line-height: 1; }
+    .status::before { content: ''; width: 6px; height: 6px; background: var(--status-color, var(--success)); border-radius: 50%; }
+
+    .main { flex: 1; overflow-y: auto; }
+    #frame-content { padding: 2rem; min-height: 100%; }
+
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 0.5rem 1.5rem;
+      flex-shrink: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 1rem;
+      min-height: 42px;
+    }
+    .header .brand { justify-self: start; width: 100%; font-size: 0.75rem; line-height: 1; }
+    .header .status { grid-column: 2; line-height: 1; }
+    .header span {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+    .header .selected-text {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* ===== TYPOGRAPHY ===== */
+    h2 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+    h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--text-secondary); margin-bottom: 1.5rem; }
+    .section { margin-bottom: 2rem; }
+    .label { font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+
+    /* ===== OPTIONS (for A/B/C choices) ===== */
+    .options { display: flex; flex-direction: column; gap: 0.75rem; }
+    .option {
+      background: var(--bg-secondary);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    .option:hover { border-color: var(--accent); }
+    .option.selected { background: var(--selected-bg); border-color: var(--selected-border); }
+    .option .letter {
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      width: 1.75rem; height: 1.75rem;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 600; font-size: 0.85rem; flex-shrink: 0;
+    }
+    .option.selected .letter { background: var(--accent); color: white; }
+    .option .content { flex: 1; }
+    .option .content h3 { font-size: 0.95rem; margin-bottom: 0.15rem; }
+    .option .content p { color: var(--text-secondary); font-size: 0.85rem; margin: 0; }
+
+    /* ===== CARDS (for showing designs/mockups) ===== */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+    .card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .card.selected { border-color: var(--selected-border); border-width: 2px; }
+    .card-image { background: var(--bg-tertiary); aspect-ratio: 16/10; display: flex; align-items: center; justify-content: center; }
+    .card-body { padding: 1rem; }
+    .card-body h3 { margin-bottom: 0.25rem; }
+    .card-body p { color: var(--text-secondary); font-size: 0.85rem; }
+
+    /* ===== MOCKUP CONTAINER ===== */
+    .mockup {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .mockup-header {
+      background: var(--bg-tertiary);
+      padding: 0.5rem 1rem;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+    }
+    .mockup-body { padding: 1.5rem; }
+
+    /* ===== SPLIT VIEW (side-by-side comparison) ===== */
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 700px) { .split { grid-template-columns: 1fr; } }
+
+    /* ===== PROS/CONS ===== */
+    .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+    .pros, .cons { background: var(--bg-secondary); border-radius: 8px; padding: 1rem; }
+    .pros h4 { color: var(--success); font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .cons h4 { color: var(--error); font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .pros ul, .cons ul { margin-left: 1.25rem; font-size: 0.85rem; color: var(--text-secondary); }
+    .pros li, .cons li { margin-bottom: 0.25rem; }
+
+    /* ===== PLACEHOLDER (for mockup areas) ===== */
+    .placeholder {
+      background: var(--bg-tertiary);
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 2rem;
+      text-align: center;
+      color: var(--text-tertiary);
+    }
+
+    /* ===== INLINE MOCKUP ELEMENTS ===== */
+    .mock-nav { background: var(--accent); color: white; padding: 0.75rem 1rem; display: flex; gap: 1.5rem; font-size: 0.9rem; }
+    .mock-sidebar { background: var(--bg-tertiary); padding: 1rem; min-width: 180px; }
+    .mock-content { padding: 1.5rem; flex: 1; }
+    .mock-button { background: var(--accent); color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.85rem; }
+    .mock-input { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; width: 100%; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <!-- BRANDING -->
+    <div class="status">Connecting…</div>
+  </div>
+
+  <div class="main">
+    <div id="frame-content">
+      <style>
+  .sn{height:640px;display:grid;grid-template-rows:44px minmax(0,1fr) 30px;background:#0f1116;color:#e8e9ee;border-radius:12px;border:1px solid #23262f;font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;font-size:12px;position:relative;user-select:none;line-height:1.4}
+  .sn button{font:inherit;color:inherit;cursor:pointer;border:none;background:none}
+  .sn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+  .sn .bar{display:flex;align-items:center;gap:4px;padding:0 8px;background:#14161c;border-bottom:1px solid #23262f;border-radius:12px 12px 0 0}
+  .sn .logo{font-weight:700;font-size:13.5px;margin:0 8px 0 4px;display:flex;align-items:center;gap:7px}
+  .sn .logo i{width:15px;height:15px;border-radius:4px;background:linear-gradient(135deg,#5b8def,#a78bfa);display:inline-block}
+  .sn .btn{display:flex;align-items:center;gap:6px;border-radius:7px;padding:5px 8px;white-space:nowrap}
+  .sn .btn:hover:not(:disabled){background:#1f232c}
+  .sn .btn.box{background:#1c1f27;border:1px solid #2a2e39}
+  .sn .btn:disabled{opacity:.35;cursor:not-allowed}
+  .sn .btn .chev{width:12px;height:12px;opacity:.6}
+  .sn .mut{opacity:.6}
+  .sn .sep{width:1px;height:20px;background:#2a2e39;margin:0 4px}
+  .sn .crumbs{flex:1;display:flex;align-items:center;gap:2px;min-width:0;overflow:hidden;white-space:nowrap}
+  .sn .crumbs a{padding:3px 6px;border-radius:5px;cursor:pointer;opacity:.7}
+  .sn .crumbs a:hover{background:#1c1f27;opacity:1}
+  .sn .crumbs a.last{opacity:1;font-weight:600}
+  .sn .crumbs span{opacity:.35}
+  .sn .badge{border-radius:9px;padding:0 6px;font-weight:700;font-size:10.5px;background:#2d3240;color:#aab}
+  .sn .badge.on{background:#fbbf24;color:#1a1a1a}
+  .sn .dd{position:relative}
+  .sn .menu{position:absolute;top:calc(100% + 6px);background:#171a21;border:1px solid #2a2e39;border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.5);padding:6px;z-index:20;display:none}
+  .sn .menu.on{display:block}
+  .sn .menu .it{padding:6px 10px;border-radius:6px;cursor:pointer;display:flex;gap:12px;justify-content:space-between;white-space:nowrap}
+  .sn .menu .it:hover{background:#232733}
+  .sn .menu .it.on{color:#8fb0ff}
+  .sn .menu .it.on::after{content:"✓"}
+  .sn .menu .mh{font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.5;padding:4px 10px 6px}
+  .sn .menu .dv{height:1px;background:#2a2e39;margin:5px 4px}
+  .sn .bl{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px}
+  .sn .bl:hover{background:#1f232c}
+  .sn .bl .s{margin-left:auto;opacity:.7}
+  .sn .bl .x{opacity:.5;padding:0 4px}
+  .sn .bl .x:hover{opacity:1}
+  .sn .empty{opacity:.55;font-size:11px;line-height:1.5;padding:8px}
+  .sn .danger{background:#c2364a;border-radius:8px;padding:8px;width:100%;margin-top:6px;font-weight:600}
+  .sn .map{position:relative;margin:8px}
+  .sn .t{position:absolute;overflow:hidden;cursor:pointer;transition:filter .12s,opacity .2s}
+  .sn .grp{border-radius:6px}
+  .sn .grp>.hd{position:absolute;left:6px;right:6px;top:0;height:16px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sn .grp>.hd span{opacity:.55;font-weight:400;margin-left:6px}
+  .sn .grp:hover{filter:brightness(1.15)}
+  .sn .leaf{border-radius:4px;color:#fff}
+  .sn .leaf:hover{filter:brightness(1.3)}
+  .sn .leaf.dim{opacity:.16;filter:saturate(.2)}
+  .sn .t.bsk{outline:2px dashed #fbbf24;outline-offset:-2px}
+  .sn .t.sel{outline:2px solid #fff;outline-offset:-2px;z-index:3}
+  .sn .lb{position:absolute;left:7px;top:5px;right:6px}
+  .sn .lb .a{font-weight:600;font-size:11px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sn .lb .b{font-size:10px;opacity:.8;line-height:1.25;white-space:nowrap}
+  .sn .stb{display:flex;align-items:center;gap:12px;padding:0 12px;background:#14161c;border-top:1px solid #23262f;font-size:11px;border-radius:0 0 12px 12px;min-width:0}
+  .sn .stb .l{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .sn .stb .mono{font-family:Consolas,monospace;opacity:.55}
+  .sn .stb .r{margin-left:auto;display:flex;align-items:center;gap:10px;white-space:nowrap}
+  .sn .ok{color:#6ee7a8}
+  .sn .stb .r button{background:#2a1d1d;border:1px solid #4a2a2a;color:#f3b4b4;border-radius:6px;padding:2px 9px}
+  .sn .nt-lock{color:#f3b4b4}
+  .sn .nt-warn{color:#f3d79a}
+  .sn .tip{position:fixed;pointer-events:none;background:rgba(23,26,33,.97);border:1px solid #2a2e39;border-radius:9px;padding:8px 10px;font-size:11px;z-index:30;display:none;max-width:300px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+  .sn .tip .tn{font-weight:600;font-size:12.5px;margin-bottom:2px}
+  .sn .tip .tnote{margin-top:5px}
+  .sn .mb{position:absolute;inset:0;background:rgba(5,6,9,.72);display:none;align-items:center;justify-content:center;z-index:40;border-radius:12px}
+  .sn .mb.on{display:flex}
+  .sn .modal{background:#171a21;border:1px solid #2a2e39;border-radius:12px;padding:20px;width:420px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .sn .modal h4{font-size:15px;margin-bottom:6px}
+  .sn .modal ul{margin:10px 0 0 18px;opacity:.8;font-size:11.5px}
+  .sn .modal .info{margin-top:12px;padding:9px 10px;border-radius:8px;font-size:11px;line-height:1.45;background:#1a2233;border:1px solid #2b3a57;color:#b9cdf5}
+  .sn .modal .mbt{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+  .sn .modal .mbt button{border-radius:8px;padding:7px 12px}
+  .sn .modal .g{background:#1c1f27;border:1px solid #2a2e39}
+  .sn .modal .p{background:#3b6fe0}
+</style>
+
+<h2>Version avec une seule petite barre en haut</h2>
+<p class="subtitle">Le treemap prend toute la largeur. Les actions sont dans la barre, les infos de l'élément survolé apparaissent dans une bulle, et celles de l'élément sélectionné en bas. Le panier s'ouvre depuis son bouton. Raccourcis : <b>Retour arrière</b> pour remonter, <b>Suppr</b> pour ajouter au panier.</p>
+
+<div class="sn" id="sn">
+  <div class="bar">
+    <div class="logo"><i></i>Snoopr</div>
+    <div class="dd">
+      <button class="btn box" data-menu="drv"><svg viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2-8h10l2 8"/></svg><b>C:</b><span class="mut" id="sn-cuse"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div class="menu" id="m-drv" style="left:0;min-width:240px">
+        <div class="mh">Disques</div>
+        <div class="it on"><span><b>C:</b> Système <span class="mut" id="sn-cuse2"></span></span></div>
+        <div class="it"><span><b>D:</b> Données <span class="mut">1,4 / 2 To</span></span></div>
+        <div class="dv"></div>
+        <div class="it"><span>Choisir un dossier…</span></div>
+      </div>
+    </div>
+    <button class="btn" title="Rescanner"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></svg></button>
+    <div class="sep"></div>
+    <button class="btn" id="sn-back" title="Remonter (Retour arrière)"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <div class="crumbs" id="sn-crumbs"></div>
+    <div class="dd">
+      <button class="btn" data-menu="age"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span id="sn-agel">Ancienneté : tout</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div class="menu" id="m-age" style="right:0;min-width:240px">
+        <div class="mh">Griser ce qui a servi récemment</div>
+        <div class="it on" data-m="0">Tout afficher</div>
+        <div class="it" data-m="6">Pas modifié depuis 6 mois</div>
+        <div class="it" data-m="12">Pas modifié depuis 1 an</div>
+        <div class="it" data-m="24">Pas modifié depuis 2 ans</div>
+      </div>
+    </div>
+    <button class="btn" title="Ouvrir dans l’Explorateur"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Ouvrir</button>
+    <button class="btn" id="sn-act" title="Suppr"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span id="sn-actl">Ajouter au panier</span></button>
+    <div class="dd">
+      <button class="btn box" data-menu="bsk"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>Panier<span class="badge" id="sn-bc">0</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div class="menu" id="m-bsk" style="right:0;width:330px"><div class="mh">Panier de nettoyage</div><div id="sn-bl"></div></div>
+    </div>
+  </div>
+  <div class="map" id="sn-map"></div>
+  <div class="stb"><span class="l" id="sn-sl"></span><span class="r" id="sn-sr"></span></div>
+  <div class="tip" id="sn-tip"></div>
+  <div class="mb" id="sn-mb"><div class="modal">
+    <h4 id="sn-mt"></h4>
+    <p id="sn-mp" style="opacity:.8"></p>
+    <ul id="sn-ml"></ul>
+    <div class="info">La corbeille garde les fichiers sur le disque : la place n’est vraiment libérée qu’une fois la corbeille vidée. « Supprimer définitivement » libère la place tout de suite, mais on ne peut plus revenir en arrière.</div>
+    <div class="mbt">
+      <button class="g" id="sn-mc">Annuler</button>
+      <button class="g" id="sn-mperm" style="color:#f3b4b4">Supprimer définitivement</button>
+      <button class="p" id="sn-mbin">Mettre à la corbeille</button>
+    </div>
+  </div></div>
+</div>
+
+<script>
+(function(){
+  const DISK=476;
+  const HUE={"Users":212,"SteamLibrary":335,"Windows":225,"Program Files":168,"pagefile.sys":28,"hiberfil.sys":45,"ProgramData":265,"$Recycle.Bin":0};
+  const NOTE={
+    win:["🔒 Dossier système de Windows : suppression bloquée. Passe par le Nettoyage de disque.","lock"],
+    pf:["🔒 Programme installé : désinstalle-le via Paramètres › Applications.","lock"],
+    pagefile:["🔒 Fichier d’échange de Windows : sa taille se règle dans Mémoire virtuelle.","lock"],
+    hiber:["🔒 Fichier d’hibernation : désactivable avec « powercfg /h off ».","lock"],
+    pd:["🔒 Données partagées des applications : bloqué par prudence.","lock"],
+    steam:["⚠ Jeu Steam : mieux vaut le désinstaller depuis Steam.","warn"],
+    bin:["⚠ Dans la corbeille : prend encore de la place tant qu’elle n’est pas vidée.","warn"]
+  };
+  const ROOT={n:"C:",c:[
+    {n:"Users",c:[{n:"Lenny",c:[
+      {n:"AppData",c:[
+        {n:"Local",c:[{n:"Docker",v:15,m:14},{n:"Packages",v:11,m:2},{n:"Temp",v:9,m:0},{n:"Google",v:7,m:0},{n:"NVIDIA DXCache",v:6,m:1}]},
+        {n:"Roaming",c:[{n:"Adobe",v:9,m:20},{n:"Discord",v:3,m:0},{n:"Code",v:2,m:0}]}
+      ]},
+      {n:"Vidéos",c:[
+        {n:"Montages 2025",c:[{n:"Rushs voyage",v:16,m:10},{n:"Exports 4K",v:12,m:6}]},
+        {n:"OBS",c:[{n:"Enregistrements 2023",v:13,m:30},{n:"Clips",v:4,m:2}]}
+      ]},
+      {n:"Téléchargements",c:[
+        {n:"VM-backup.vhdx",v:10,m:28},{n:"UnrealEngine-setup",v:7,m:24},{n:"Win11_24H2.iso",v:6,m:14},
+        {n:"ubuntu-24.04.iso",v:6,m:22},{n:"AdobeCC-setup",v:5,m:18},{n:"Divers",v:4,m:3}
+      ]},
+      {n:"Documents",c:[{n:"Projets",v:10,m:0},{n:"Cours",v:5,m:36},{n:"Divers",v:3,m:12}]},
+      {n:"Images",c:[{n:"Photos 2022",v:9,m:40},{n:"Captures",v:6,m:0}]}
+    ]}]},
+    {n:"SteamLibrary",c:[{n:"Cyberpunk 2077",v:70,m:16,hint:"steam"},{n:"Elden Ring",v:50,m:1,hint:"steam"},{n:"Hades II",v:10,m:0,hint:"steam"}]},
+    {n:"Windows",lock:"win",c:[{n:"WinSxS",v:12,m:1},{n:"System32",v:8,m:0},{n:"Installer",v:6,m:3},{n:"Autres",v:6,m:0}]},
+    {n:"Program Files",lock:"pf",c:[{n:"Adobe",v:9,m:20},{n:"JetBrains",v:5,m:0},{n:"Office",v:4,m:3},{n:"NVIDIA",v:3,m:1}]},
+    {n:"pagefile.sys",v:16,m:0,lock:"pagefile"},
+    {n:"hiberfil.sys",v:12,m:0,lock:"hiber"},
+    {n:"ProgramData",v:9,m:2,lock:"pd"}
+  ]};
+
+  let uid=0;
+  function init(n,p){n.id=++uid;n.p=p;(n.c||[]).forEach(k=>init(k,n));}
+  function recompute(n){
+    if(n.c){n.c.forEach(recompute);n.v=n.c.reduce((s,k)=>s+k.v,0);n.m=n.c.length?Math.min(...n.c.map(k=>k.m)):0;n.cnt=n.c.reduce((s,k)=>s+(k.c?k.cnt:1),0);}
+    return n.v;
+  }
+  init(ROOT,null);recompute(ROOT);
+
+  const $=s=>document.querySelector(s);
+  const map=$("#sn-map"),tip=$("#sn-tip");
+  let cur=ROOT,sel=ROOT,age=0,basket=[],bin=null,freed=0;
+
+  const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const fmtv=v=>v>=1000?(v/1000).toFixed(1).replace(".",",")+" To":Math.round(v)+" Go";
+  const ageShort=m=>m<1?"ce mois-ci":m<12?m+" mois":Math.floor(m/12)+(m>=24?" ans":" an");
+  const ageLong=m=>m<1?"ce mois-ci":"il y a "+ageShort(m);
+  function topOf(n){let x=n;while(x.p&&x.p.p)x=x.p;return x;}
+  const hueOf=n=>n===ROOT?212:HUE[topOf(n).n];
+  const satOf=h=>h===225?12:62;
+  function up(n,f){for(let x=n;x;x=x.p){const r=f(x);if(r)return r;}return null;}
+  const lockOf=n=>up(n,x=>x.lock);
+  const hintOf=n=>up(n,x=>x.hint);
+  function isAnc(a,b){if(!a||!b)return false;for(let x=b.p;x;x=x.p)if(x===a)return true;return false;}
+  const inB=n=>basket.includes(n);
+  const coveredBy=n=>basket.find(b=>isAnc(b,n));
+  const inBin=n=>!!bin&&(n===bin||isAnc(bin,n));
+  function pathOf(n){const a=[];for(let x=n;x;x=x.p)a.unshift(x.n);return a[0]+"\\"+a.slice(1).join("\\");}
+  function noteOf(k){if(inBin(k))return NOTE.bin;const l=lockOf(k);if(l)return NOTE[l];const h=hintOf(k);if(h)return NOTE[h];return null;}
+
+  function squarify(items,x,y,w,h){
+    const list=items.filter(i=>i.v>0);const total=list.reduce((s,i)=>s+i.v,0);
+    if(!total||w<=0||h<=0)return [];
+    const scale=w*h/total;
+    const nodes=list.map(i=>({ref:i,a:i.v*scale})).sort((p,q)=>q.a-p.a);
+    const out=[];let row=[],i=0;
+    function worst(r,side){const s=r.reduce((t,n)=>t+n.a,0);let mx=-Infinity,mn=Infinity;r.forEach(n=>{mx=Math.max(mx,n.a);mn=Math.min(mn,n.a);});return Math.max(side*side*mx/(s*s),(s*s)/(side*side*mn));}
+    function place(r){const s=r.reduce((t,n)=>t+n.a,0);
+      if(w>=h){const cw=s/h;let cy=y;r.forEach(n=>{const nh=n.a/cw;out.push({ref:n.ref,x:x,y:cy,w:cw,h:nh});cy+=nh;});x+=cw;w-=cw;}
+      else{const rh=s/w;let cx=x;r.forEach(n=>{const nw=n.a/rh;out.push({ref:n.ref,x:cx,y:y,w:nw,h:rh});cx+=nw;});y+=rh;h-=rh;}}
+    while(i<nodes.length){const side=Math.min(w,h);const n=nodes[i];
+      if(row.length===0||worst(row.concat([n]),side)<=worst(row,side)){row.push(n);i++;}
+      else{place(row);row=[];}}
+    if(row.length)place(row);
+    return out;
+  }
+
+  function showTip(e,k){
+    const nt=noteOf(k);
+    tip.innerHTML='<div class="tn">'+esc(k.n)+'</div><div>'+fmtv(k.v)+' · '+(k.v/DISK*100).toFixed(1).replace(".",",")+' % du disque</div>'+
+      '<div class="mut">Modifié '+ageLong(k.m)+(k.c?' · '+k.cnt+' éléments':'')+'</div>'+
+      (nt?'<div class="tnote nt-'+nt[1]+'">'+nt[0]+'</div>':'')+
+      (k.c?'<div class="mut" style="margin-top:4px;font-size:10px">Double-clic pour entrer</div>':'');
+    tip.style.display="block";
+    const tw=tip.offsetWidth,th=tip.offsetHeight;
+    let x=e.clientX+14,y=e.clientY+16;
+    if(x+tw>window.innerWidth-8)x=e.clientX-tw-14;
+    if(y+th>window.innerHeight-8)y=e.clientY-th-12;
+    tip.style.left=x+"px";tip.style.top=y+"px";
+  }
+  const hideTip=()=>{tip.style.display="none";};
+
+  function rec(node,x,y,w,h,d){
+    squarify(node.c,x,y,w,h).forEach(r=>{
+      const k=r.ref,g=1.5,X=r.x+g,Y=r.y+g,W=r.w-2*g,H=r.h-2*g;if(W<=1||H<=1)return;
+      const hu=hueOf(k),sa=satOf(hu);
+      const el=document.createElement("div");
+      el.style.cssText="left:"+X+"px;top:"+Y+"px;width:"+W+"px;height:"+H+"px";
+      const mark=(k===sel?" sel":"")+(inB(k)?" bsk":"");
+      el.onclick=e=>{e.stopPropagation();select(k);};
+      el.onmousemove=e=>showTip(e,k);
+      el.onmouseleave=hideTip;
+      if(k.c){
+        el.className="t grp"+mark;
+        el.style.background="hsl("+hu+" "+sa+"% "+(13+d*6)+"%)";
+        el.style.boxShadow="inset 0 0 0 1px hsl("+hu+" "+sa+"% "+(24+d*6)+"% / .8)";
+        const hd=H>36&&W>50;
+        if(hd)el.innerHTML='<div class="hd">'+esc(k.n)+'<span>'+fmtv(k.v)+'</span></div>';
+        el.ondblclick=e=>{e.stopPropagation();zoom(k);};
+        map.appendChild(el);
+        const t=hd?16:3;rec(k,X+3,Y+t,W-6,H-t-3,d+1);
+      }else{
+        const dim=age>0&&k.m<age;
+        el.className="t leaf"+(dim?" dim":"")+mark;
+        el.style.background="linear-gradient(160deg,hsl("+hu+" "+sa+"% "+(46-d*3)+"%),hsl("+hu+" "+sa+"% "+(36-d*3)+"%))";
+        const sub=fmtv(k.v)+(age>0?" · "+ageShort(k.m):"");
+        if(W>58&&H>32)el.innerHTML='<div class="lb"><div class="a">'+esc(k.n)+'</div><div class="b">'+sub+'</div></div>';
+        else if(W>42&&H>17)el.innerHTML='<div class="lb" style="top:2px;left:5px"><div class="a" style="font-size:9.5px">'+esc(k.n)+'</div></div>';
+        map.appendChild(el);
+      }
+    });
+  }
+  function renderMap(){
+    map.innerHTML="";hideTip();
+    if(!cur.c||!cur.v){map.innerHTML='<div class="empty" style="padding:20px">Dossier vide</div>';return;}
+    rec(cur,0,0,map.clientWidth,map.clientHeight,0);
+  }
+
+  function actState(){
+    const k=sel;
+    if(k===ROOT)return {l:"Ajouter au panier",d:true};
+    if(k===bin)return {l:"Vider la corbeille",f:emptyBin};
+    if(inBin(k))return {l:"Déjà dans la corbeille",d:true};
+    if(lockOf(k))return {l:"Suppression bloquée",d:true};
+    if(coveredBy(k))return {l:"Déjà dans le panier",d:true};
+    if(inB(k))return {l:"Retirer du panier",f:()=>toggleBasket(k)};
+    return {l:"Ajouter au panier",f:()=>toggleBasket(k)};
+  }
+
+  function renderBar(){
+    const segs=[];for(let x=cur;x;x=x.p)segs.unshift(x);
+    const cr=$("#sn-crumbs");
+    cr.innerHTML=segs.map((s,i)=>'<a data-i="'+i+'" class="'+(i===segs.length-1?"last":"")+'">'+esc(s.n)+'</a>').join("<span>›</span>");
+    cr.querySelectorAll("a").forEach(a=>a.onclick=()=>zoom(segs[+a.dataset.i]));
+    $("#sn-back").disabled=!cur.p;
+    const u=fmtv(ROOT.v)+" / "+DISK+" Go";
+    $("#sn-cuse").textContent=u;$("#sn-cuse2").textContent=u;
+    const a=actState(),ab=$("#sn-act");
+    ab.disabled=!!a.d;$("#sn-actl").textContent=a.l;ab.onclick=()=>{if(a.f)a.f();};
+    const bc=$("#sn-bc");bc.textContent=basket.length;bc.classList.toggle("on",basket.length>0);
+    const total=basket.reduce((s,b)=>s+b.v,0);
+    const bl=$("#sn-bl");
+    bl.innerHTML=basket.length
+      ? basket.map((b,i)=>'<div class="bl"><span>'+esc(b.n)+'</span><span class="s">'+fmtv(b.v)+'</span><button class="x" data-i="'+i+'" title="Retirer">✕</button></div>').join("")+
+        '<button class="danger" id="sn-del">Supprimer '+basket.length+' élément'+(basket.length>1?"s":"")+' · '+fmtv(total)+'</button>'
+      : '<div class="empty">Le panier est vide. Sélectionne un bloc puis « Ajouter au panier » (ou Suppr). Rien n’est effacé tant que tu n’as pas confirmé.</div>';
+    bl.querySelectorAll(".x").forEach(x=>x.onclick=()=>{basket.splice(+x.dataset.i,1);renderAll();});
+    const del=$("#sn-del");if(del)del.onclick=()=>{closeMenus();openModal();};
+  }
+
+  function renderStatus(){
+    const k=sel;let l;
+    if(k===ROOT)l='<b>C:\\</b> · '+fmtv(ROOT.v)+' utilisés sur '+DISK+' Go <span class="mut">· Scan terminé en 3,8 s · 1 284 312 fichiers</span>';
+    else{const nt=noteOf(k);l='<b>'+esc(k.n)+'</b> · '+fmtv(k.v)+' · modifié '+ageLong(k.m)+' · <span class="mono">'+esc(pathOf(k))+'</span>'+(nt?'  <span class="nt-'+nt[1]+'">'+nt[0]+'</span>':'');}
+    $("#sn-sl").innerHTML=l;
+    let r="";
+    if(freed>0)r+='<span class="ok">✓ '+fmtv(freed)+' libérés</span>';
+    if(bin&&bin.v>0)r+='<span>Corbeille : '+fmtv(bin.v)+' encore sur le disque</span><button id="sn-empty">Vider la corbeille</button>';
+    $("#sn-sr").innerHTML=r;
+    const b=$("#sn-empty");if(b)b.onclick=emptyBin;
+  }
+
+  function renderAll(){renderBar();renderMap();renderStatus();}
+  function select(k){sel=k;renderBar();renderMap();renderStatus();}
+  function zoom(k){if(!k||!k.c)return;cur=k;sel=k;renderAll();}
+  function toggleBasket(k){
+    if(inB(k))basket=basket.filter(b=>b!==k);
+    else{basket=basket.filter(b=>!isAnc(k,b));basket.push(k);}
+    renderAll();
+  }
+  function openModal(){
+    const total=basket.reduce((s,b)=>s+b.v,0),n=basket.length;
+    $("#sn-mt").textContent="Supprimer "+n+" élément"+(n>1?"s":"")+" ?";
+    $("#sn-mp").innerHTML="Ils occupent <b>"+fmtv(total)+"</b> sur le disque.";
+    $("#sn-ml").innerHTML=basket.map(b=>"<li>"+esc(pathOf(b))+" — "+fmtv(b.v)+"</li>").join("");
+    $("#sn-mb").classList.add("on");
+  }
+  function closeModal(){$("#sn-mb").classList.remove("on");}
+  function doDelete(perm){
+    const total=basket.reduce((s,b)=>s+b.v,0);
+    const gone=n=>basket.some(b=>b===n||isAnc(b,n));
+    const resetCur=gone(cur),resetSel=gone(sel);
+    basket.forEach(b=>{
+      b.p.c=b.p.c.filter(x=>x!==b);
+      if(!perm){
+        if(!bin){bin={n:"$Recycle.Bin",c:[],m:0,p:ROOT,id:++uid};ROOT.c.push(bin);}
+        b.p=bin;bin.c.push(b);
+      }
+    });
+    if(perm)freed+=total;
+    basket=[];recompute(ROOT);if(bin)bin.m=0;
+    if(resetCur)cur=ROOT;if(resetSel)sel=cur;
+    closeModal();renderAll();
+  }
+  function emptyBin(){
+    if(!bin)return;
+    freed+=bin.v;
+    if(inBin(cur))cur=ROOT;if(inBin(sel))sel=cur;
+    ROOT.c=ROOT.c.filter(x=>x!==bin);bin=null;
+    recompute(ROOT);renderAll();
+  }
+
+  function closeMenus(){document.querySelectorAll("#sn .menu").forEach(m=>m.classList.remove("on"));}
+  document.querySelectorAll("#sn [data-menu]").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();const m=$("#m-"+b.dataset.menu),was=m.classList.contains("on");closeMenus();if(!was)m.classList.add("on");
+  });
+  document.addEventListener("click",e=>{if(!e.target.closest("#sn .dd"))closeMenus();});
+  document.querySelectorAll("#m-age .it").forEach(it=>it.onclick=()=>{
+    age=+it.dataset.m;
+    document.querySelectorAll("#m-age .it").forEach(x=>x.classList.toggle("on",x===it));
+    $("#sn-agel").textContent=age?"Pas modifié depuis "+(age<12?age+" mois":age/12+(age>=24?" ans":" an")):"Ancienneté : tout";
+    closeMenus();renderMap();
+  });
+  document.querySelectorAll("#m-drv .it").forEach(it=>it.onclick=closeMenus);
+  $("#sn-back").onclick=()=>{if(cur.p)zoom(cur.p);};
+  map.onclick=()=>select(cur);
+  $("#sn-mc").onclick=closeModal;
+  $("#sn-mbin").onclick=()=>doDelete(false);
+  $("#sn-mperm").onclick=()=>doDelete(true);
+  document.addEventListener("keydown",e=>{
+    if(e.target.closest&&e.target.closest("input,textarea"))return;
+    if(e.key==="Escape"){closeModal();closeMenus();}
+    else if(e.key==="Backspace"&&cur.p){e.preventDefault();zoom(cur.p);}
+    else if(e.key==="Delete"){const a=actState();if(a.f&&sel!==bin)a.f();}
+  });
+  let tm;window.addEventListener("resize",()=>{clearTimeout(tm);tm=setTimeout(renderMap,120);});
+  requestAnimationFrame(renderAll);
+})();
+</script>
+
+    </div>
+  </div>
+
+</body>
+</html>
