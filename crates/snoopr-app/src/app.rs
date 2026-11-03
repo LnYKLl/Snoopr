@@ -6,7 +6,7 @@ use crate::system;
 use crate::theme;
 use crate::treemap::{self, CachedLayout};
 use crate::ui;
-use crate::ui::modals::{self, Modal, ModalAction, Step, next_step};
+use crate::ui::modals::{self, Modal, ModalAction, OpenModal, Step, next_step};
 use crate::ui::statusbar::{self, StatusAction};
 use crate::ui::topbar::{self, TopBarAction};
 use snoopr_core::actions::{PrimaryAction, primary_action};
@@ -29,7 +29,7 @@ pub struct SnooprApp {
     /// Whether the process runs as administrator (queried once).
     pub elevated: bool,
     /// The open deletion dialog; while it is open the rest of the window is inert.
-    pub modal: Option<Modal>,
+    pub modal: Option<OpenModal>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +118,7 @@ impl SnooprApp {
         let Some(s) = &self.session else { return };
         if self.modal.is_none() && can_start_delete(s.is_busy(), s.basket.len()) {
             egui::Popup::close_all(ctx);
-            self.modal = Some(Modal::ConfirmDelete);
+            self.modal = Some(OpenModal::new(Modal::ConfirmDelete, ctx));
         }
     }
 
@@ -127,20 +127,21 @@ impl SnooprApp {
         let Some(s) = &self.session else { return };
         if self.modal.is_none() && !s.is_busy() {
             egui::Popup::close_all(ctx);
-            self.modal = Some(Modal::ConfirmEmptyBin);
+            self.modal = Some(OpenModal::new(Modal::ConfirmEmptyBin, ctx));
         }
     }
 
     /// Acts on a dialog button. Deleting only ever starts here, from a
     /// confirm button of the open dialog (see [`next_step`]); the session
     /// checks every item again before its worker touches the disk.
-    fn apply_modal(&mut self, a: ModalAction) {
+    fn apply_modal(&mut self, ctx: &egui::Context, a: ModalAction) {
         if a == ModalAction::None {
             return;
         }
-        let (Some(m), Some(s)) = (&self.modal, &mut self.session) else {
+        let (Some(open), Some(s)) = (&self.modal, &mut self.session) else {
             return;
         };
+        let m = &open.modal;
         let items: Vec<(NodeId, u64)> = s
             .delete_items(s.basket.items())
             .iter()
@@ -150,7 +151,8 @@ impl SnooprApp {
         match next_step(m, a, &items, || recycle_capacity(&volume)) {
             Step::Stay => {}
             Step::Close => self.modal = None,
-            Step::Open(next) => self.modal = Some(next),
+            // A new dialog: its buttons wait again (no double-click carry-over).
+            Step::Open(next) => self.modal = Some(OpenModal::new(next, ctx)),
             Step::Delete(plan) => {
                 self.modal = None;
                 let requests = plan
@@ -170,13 +172,13 @@ impl SnooprApp {
     }
 
     /// Shows the failures of finished jobs; they wait if another dialog is open.
-    fn collect_failures(&mut self) {
+    fn collect_failures(&mut self, ctx: &egui::Context) {
         let Some(s) = &mut self.session else { return };
-        match &mut self.modal {
+        match self.modal.as_mut().map(|o| &mut o.modal) {
             None => {
                 let f = s.take_failures();
                 if !f.is_empty() {
-                    self.modal = Some(Modal::Failures(f));
+                    self.modal = Some(OpenModal::new(Modal::Failures(f), ctx));
                 }
             }
             Some(Modal::Failures(list)) => list.extend(s.take_failures()),
@@ -302,7 +304,7 @@ impl eframe::App for SnooprApp {
                 ctx.request_repaint_after(Duration::from_millis(ms));
             }
         }
-        self.collect_failures();
+        self.collect_failures(ctx);
         let blocked = self.modal.is_some()
             || egui::Popup::is_any_open(ctx)
             || ctx.egui_wants_keyboard_input();
@@ -395,9 +397,9 @@ impl eframe::App for SnooprApp {
             self.apply_top(ui.ctx(), top);
             self.apply_status(ui.ctx(), status);
         }
-        if let (Some(m), Some(s)) = (&self.modal, &self.session) {
-            let a = modals::show(ui.ctx(), m, s, &self.rules, self.lang);
-            self.apply_modal(a);
+        if let (Some(open), Some(s)) = (&mut self.modal, &self.session) {
+            let a = modals::show(ui.ctx(), open, s, &self.rules, self.lang);
+            self.apply_modal(ui.ctx(), a);
         }
     }
 }

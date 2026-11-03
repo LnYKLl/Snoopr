@@ -20,6 +20,7 @@ use snoopr_core::delete::{DeleteMode, Failure};
 use snoopr_core::rules::{RuleContext, Verdict};
 use snoopr_core::tree::NodeId;
 use std::sync::PoisonError;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Modal {
@@ -123,6 +124,75 @@ pub fn next_step(
     }
 }
 
+/// How long a new dialog ignores its buttons, so that the second click of a
+/// double-click never hits a button that has just appeared under the cursor.
+pub const ARM_DELAY: Duration = Duration::from_millis(300);
+
+/// The buttons of a dialog act only once [`ARM_DELAY`] has passed since it
+/// appeared and the press of the click began after it appeared.
+pub fn buttons_armed(opened_at: Instant, now: Instant, pressed_since_open: bool) -> bool {
+    pressed_since_open
+        && now
+            .checked_duration_since(opened_at)
+            .is_some_and(|d| d >= ARM_DELAY)
+}
+
+/// Whether a pointer press began after the pass in which a dialog appeared.
+/// Presses of that pass predate the dialog: the user could not see it yet.
+#[derive(Clone, Copy, Debug)]
+pub struct PressTracker {
+    opened_pass: u64,
+    pressed: bool,
+}
+
+impl PressTracker {
+    pub fn new(opened_pass: u64) -> Self {
+        PressTracker {
+            opened_pass,
+            pressed: false,
+        }
+    }
+
+    /// Records the input of pass `pass`; `pressed_now` = a button went down in it.
+    pub fn track(&mut self, pass: u64, pressed_now: bool) {
+        if pass > self.opened_pass && pressed_now {
+            self.pressed = true;
+        }
+    }
+
+    pub fn pressed_since_open(&self) -> bool {
+        self.pressed
+    }
+}
+
+/// Keeps a button's action when the buttons are armed; before that, only
+/// cancelling gets through (it is always safe).
+fn gate(a: ModalAction, armed: bool) -> ModalAction {
+    match a {
+        ModalAction::None | ModalAction::Close => a,
+        _ if armed => a,
+        _ => ModalAction::None,
+    }
+}
+
+/// An open dialog and its guard against clicks meant for something else.
+/// Make a new one for every dialog shown, so the guard starts again.
+pub struct OpenModal {
+    pub modal: Modal,
+    opened_at: Instant,
+    presses: PressTracker,
+}
+
+impl OpenModal {
+    pub fn new(modal: Modal, ctx: &egui::Context) -> Self {
+        OpenModal {
+            modal,
+            opened_at: Instant::now(),
+            presses: PressTracker::new(ctx.cumulative_pass_nr()),
+        }
+    }
+}
+
 const WIDTH: f32 = 480.0;
 const ROW_H: f32 = 20.0;
 const BACKDROP: Color32 = Color32::from_rgba_unmultiplied_const(5, 6, 9, 184);
@@ -147,15 +217,26 @@ fn modal_frame() -> egui::Frame {
         })
 }
 
-/// Draws dialog `m` over a dimmed backdrop that blocks the rest of the window,
-/// and returns the button clicked. A click on the backdrop closes it.
+/// Draws the dialog over a dimmed backdrop that blocks the rest of the window,
+/// and returns the button clicked. A click on the backdrop closes it. Until
+/// the buttons are armed (see [`buttons_armed`]) only Cancel acts.
 pub fn show(
     ctx: &egui::Context,
-    m: &Modal,
+    open: &mut OpenModal,
     s: &Session,
     rules: &RuleContext,
     lang: Lang,
 ) -> ModalAction {
+    open.presses.track(
+        ctx.cumulative_pass_nr(),
+        ctx.input(|i| i.pointer.any_pressed()),
+    );
+    let armed = buttons_armed(
+        open.opened_at,
+        Instant::now(),
+        open.presses.pressed_since_open(),
+    );
+    let m = &open.modal;
     let kind = match m {
         Modal::ConfirmDelete => "confirm-delete",
         Modal::TooBig { .. } => "too-big",
@@ -178,7 +259,7 @@ pub fn show(
     if r.backdrop_response.clicked() {
         ModalAction::Close
     } else {
-        r.inner
+        gate(r.inner, armed)
     }
 }
 
@@ -647,5 +728,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn buttons_arm_after_delay_and_a_new_press() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        assert!(!buttons_armed(t0, at(100), true));
+        assert!(!buttons_armed(t0, at(400), false));
+        assert!(buttons_armed(t0, at(400), true));
+        assert!(buttons_armed(t0, at(300), true));
+        // A clock going backwards never arms.
+        assert!(!buttons_armed(at(400), t0, true));
+    }
+
+    #[test]
+    fn unarmed_buttons_can_only_cancel() {
+        use ModalAction as A;
+        for a in [
+            A::Recycle,
+            A::DeletePermanently,
+            A::TooBigDeleteAll,
+            A::TooBigSkip,
+            A::EmptyBin,
+        ] {
+            assert_eq!(gate(a, false), A::None, "{a:?}");
+            assert_eq!(gate(a, true), a);
+        }
+        assert_eq!(gate(A::Close, false), A::Close);
+        assert_eq!(gate(A::None, true), A::None);
+    }
+
+    #[test]
+    fn only_presses_after_the_opening_pass_count() {
+        let mut p = PressTracker::new(7);
+        p.track(7, true);
+        assert!(!p.pressed_since_open());
+        p.track(8, false);
+        assert!(!p.pressed_since_open());
+        p.track(9, true);
+        assert!(p.pressed_since_open());
+        p.track(10, false);
+        assert!(p.pressed_since_open());
     }
 }

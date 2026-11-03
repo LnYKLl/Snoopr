@@ -14,7 +14,7 @@ use snoopr_core::delete::{DeleteMode, Failure, FailureReason, ItemOutcome};
 use snoopr_core::filetype::root_context;
 use snoopr_core::rules::RuleContext;
 use snoopr_core::scan::{ScanHandle, start_scan};
-use snoopr_core::tree::{NodeId, NodeKind, SharedTree, Tree};
+use snoopr_core::tree::{EntryData, NodeId, NodeKind, SharedTree, Tree};
 use snoopr_core::volume::{update_unscanned, volume_root_of, volume_usage};
 use std::collections::VecDeque;
 use std::io;
@@ -443,26 +443,51 @@ impl Session {
         self.finish_empty_bin(result);
     }
 
-    /// Success: the bin's bytes are freed and its block leaves the tree.
+    /// Success: the bin's bytes are freed and its block is rescanned.
     /// Failure: reported in the recap dialog.
     fn finish_empty_bin(&mut self, result: io::Result<()>) {
         match result {
             Ok(()) => {
                 self.freed += self.bin_bytes;
                 self.bin_bytes = 0;
-                let bin = {
+                // Only this user's bin was emptied: the other folders of
+                // `$Recycle.Bin` (other accounts, orphans) stay on disk. The
+                // block is replaced by an empty folder that is rescanned, so
+                // they stay in the tree; the rescan adds nothing to `freed`.
+                let replaced = {
                     let mut tree = self.tree.write().unwrap_or_else(PoisonError::into_inner);
-                    let bin = tree.recycle_bin();
-                    if let Some(b) = bin {
+                    tree.recycle_bin().map(|b| {
+                        let (name, parent, newest, path) = {
+                            let n = tree.node(b);
+                            (n.name.to_os_string(), n.parent, n.newest, tree.path(b))
+                        };
                         tree.detach(b);
-                    }
-                    bin
+                        let rescan = parent.map(|p| {
+                            let entry = EntryData {
+                                name,
+                                kind: NodeKind::Dir,
+                                size: 0,
+                                newest,
+                            };
+                            let node = tree.add_children(p, vec![entry])[0];
+                            Rescan {
+                                node,
+                                path,
+                                old_size: 0,
+                            }
+                        });
+                        (b, rescan)
+                    })
                 };
-                if let Some(b) = bin {
-                    let tree = self.tree.read().unwrap_or_else(PoisonError::into_inner);
-                    self.basket.retain(|id| tree.is_attached(id));
-                    (self.view.root, self.view.selected) =
-                        reset_view(&tree, &[b], self.view.root, self.view.selected);
+                if let Some((b, rescan)) = replaced {
+                    {
+                        let tree = self.tree.read().unwrap_or_else(PoisonError::into_inner);
+                        self.basket.retain(|id| tree.is_attached(id));
+                        (self.view.root, self.view.selected) =
+                            reset_view(&tree, &[b], self.view.root, self.view.selected);
+                    }
+                    self.queued_rescans.extend(rescan);
+                    self.start_queued_rescans();
                 }
                 self.refresh_volume();
             }
@@ -861,9 +886,23 @@ mod tests {
         wait_idle(&mut s);
     }
 
+    /// A drive root that does not exist here, so rescanning its
+    /// `$Recycle.Bin` reads nothing (never the real Recycle Bin).
+    fn missing_drive() -> PathBuf {
+        ('D'..='Z')
+            .rev()
+            .map(|c| PathBuf::from(format!(r"{c}:\")))
+            .find(|p| !p.exists())
+            .expect("a free drive letter")
+    }
+
+    /// Only this user's bin is emptied (`SHEmptyRecycleBinW`): the block is
+    /// rescanned instead of removed, so other accounts' folders stay. Calls
+    /// `finish_empty_bin` directly, never the real API.
     #[test]
-    fn emptied_bin_is_counted_and_detached() {
-        let mut t = Tree::new(PathBuf::from(r"C:\"), 0);
+    fn emptied_bin_is_counted_and_rescanned() {
+        let drive = missing_drive();
+        let mut t = Tree::new(drive.clone(), 0);
         let root = t.root();
         let top = t.add_children(
             root,
@@ -881,14 +920,30 @@ mod tests {
         s.finish_empty_bin(Ok(()));
         assert_eq!((s.freed, s.bin_bytes), (40, 0));
         assert_eq!((s.view.root, s.view.selected), (root, root));
-        assert!(s.tree.read().unwrap().recycle_bin().is_none());
+        let ph = {
+            let tree = s.tree.read().unwrap();
+            let ph = tree.recycle_bin().expect("a new $Recycle.Bin block");
+            assert_ne!(ph, bin);
+            assert!(!tree.is_attached(bin));
+            let n = tree.node(ph);
+            assert_eq!(&*n.name, std::ffi::OsStr::new("$Recycle.Bin"));
+            assert_eq!((n.parent, n.kind, n.size), (Some(root), NodeKind::Dir, 0));
+            assert_eq!(tree.node(root).size, 10);
+            ph
+        };
+        let rescanned =
+            s.rescans.iter().any(|r| r.node == ph) || s.queued_rescans.iter().any(|r| r.node == ph);
+        assert!(rescanned && s.is_busy());
+        wait_idle(&mut s);
+        // The rescan of the emptied bin adds nothing to `freed`.
+        assert_eq!(s.freed, 40);
         assert!(s.take_failures().is_empty());
         s.finish_empty_bin(Err(std::io::Error::other("nope")));
         assert_eq!(s.freed, 40);
         assert_eq!(
             s.take_failures(),
             vec![Failure {
-                path: PathBuf::from(r"C:\"),
+                path: drive,
                 reason: FailureReason::Other("nope".into()),
             }]
         );
