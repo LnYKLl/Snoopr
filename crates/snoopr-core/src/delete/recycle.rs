@@ -21,6 +21,12 @@ pub fn fits_in_recycle_bin(size: u64, cap: RecycleCapacity) -> bool {
     }
 }
 
+/// La corbeille est vide seulement s'il n'y a aucun élément (la taille peut être 0 avec des éléments).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn bin_is_empty(_size: i64, items: i64) -> bool {
+    items == 0
+}
+
 /// Convertit un HRESULT en raison d'échec.
 pub fn reason_from_hresult(hr: i32) -> FailureReason {
     match hr as u32 {
@@ -163,12 +169,12 @@ mod imp {
         match res {
             Err(e) => Err(reason_from_hresult(e.code().0)),
             Ok(_) => Err(FailureReason::Other(
-                "l'élément existe encore après l'envoi à la corbeille".into(),
+                "item still exists after recycle".into(),
             )),
         }
     }
 
-    pub fn query_recycle_bin(volume_root: &Path) -> io::Result<u64> {
+    fn query_size_and_items(volume_root: &Path) -> io::Result<(i64, i64)> {
         let root = root_wide(volume_root);
         let mut info = SHQUERYRBINFO {
             cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32,
@@ -176,14 +182,18 @@ mod imp {
         };
         unsafe { SHQueryRecycleBinW(PCWSTR(root.as_ptr()), &mut info) }
             .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
-        Ok(info.i64Size.max(0) as u64)
+        Ok((info.i64Size, info.i64NumItems))
+    }
+
+    pub fn query_recycle_bin(volume_root: &Path) -> io::Result<u64> {
+        Ok(query_size_and_items(volume_root)?.0.max(0) as u64)
     }
 
     pub fn empty_recycle_bin(volume_root: &Path) -> io::Result<()> {
         let root = root_wide(volume_root);
         let flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND;
         // Une corbeille déjà vide est un succès : on vérifie d'abord.
-        if query_recycle_bin(volume_root).is_ok_and(|n| n == 0) {
+        if query_size_and_items(volume_root).is_ok_and(|(size, items)| bin_is_empty(size, items)) {
             return Ok(());
         }
         unsafe { SHEmptyRecycleBinW(None, PCWSTR(root.as_ptr()), flags) }
@@ -201,7 +211,7 @@ mod stub {
         RecycleCapacity::Unknown
     }
     pub fn recycle(_path: &Path) -> Result<(), FailureReason> {
-        Err(FailureReason::Other("corbeille non prise en charge".into()))
+        Err(FailureReason::Other("unsupported platform".into()))
     }
     pub fn query_recycle_bin(_volume_root: &Path) -> io::Result<u64> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
@@ -224,6 +234,13 @@ mod tests {
         assert!(fits_in_recycle_bin(10, RecycleCapacity::MaxBytes(10)));
         assert!(!fits_in_recycle_bin(11, RecycleCapacity::MaxBytes(10)));
         assert!(fits_in_recycle_bin(u64::MAX, RecycleCapacity::Unknown));
+    }
+
+    #[test]
+    fn bin_is_empty_uses_item_count() {
+        assert!(bin_is_empty(0, 0));
+        assert!(!bin_is_empty(0, 3));
+        assert!(!bin_is_empty(10, 1));
     }
 
     #[test]
