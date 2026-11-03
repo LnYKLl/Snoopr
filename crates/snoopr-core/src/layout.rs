@@ -52,8 +52,8 @@ impl Default for LayoutParams {
             gap: 1.5,
             pad: 3.0,
             header_h: 16.0,
-            header_min_w: 50.0,
-            header_min_h: 36.0,
+            header_min_w: 64.0,
+            header_min_h: 40.0,
             min_area: 48.0,
             min_side: 2.0,
         }
@@ -246,7 +246,11 @@ fn place_children(
                     h: r.h - 2.0 * p.pad,
                 }
             };
-            if content.w >= p.min_side && content.h >= p.min_side && content.area() >= p.min_area {
+            if header
+                && content.w >= p.min_side
+                && content.h >= p.min_side
+                && content.area() >= p.min_area
+            {
                 place_children(tree, id, content, depth + 1, p, out);
             }
         }
@@ -418,5 +422,22 @@ mod tests {
         let placed = layout(&t, t.root(), b, &LayoutParams::default());
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].item, Item::Node(ids[1]));
+    }
+
+    #[test]
+    fn small_dir_is_closed() {
+        // A (dir, 60) and B (40) in 120x80: A is about 72x80 -> header; shrink to close it.
+        let (t, a, ..) = nested();
+        let b = Rect {
+            x: 0.,
+            y: 0.,
+            w: 100.,
+            h: 38.,
+        };
+        let placed = layout(&t, t.root(), b, &LayoutParams::default());
+        let pa = placed.iter().find(|p| p.item == Item::Node(a)).unwrap();
+        assert!(!pa.header);
+        assert_eq!(placed.len(), 2, "no child of a closed dir is placed");
+        assert!(placed.iter().all(|p| p.depth == 0));
     }
 }

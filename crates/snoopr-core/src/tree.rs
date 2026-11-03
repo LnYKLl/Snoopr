@@ -2,6 +2,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use crate::filetype::{Context, FileType, child_context, file_type};
+
 const UNSCANNED_NAME: &str = "<unscanned>";
 const RECYCLE_BIN_NAME: &str = "$Recycle.Bin";
 
@@ -28,6 +30,12 @@ pub struct Node {
     /// Unix seconds; for a `Dir`, the max of its own date and its children's.
     pub newest: i64,
     pub attached: bool,
+    /// Context inherited from the parent folders (meaningful for a `Dir`).
+    pub ctx: Context,
+    /// Content type of a `File`; `None` for other kinds.
+    pub ftype: Option<FileType>,
+    /// Bytes per `FileType` below this node; allocated for `Dir` nodes only.
+    types: Option<Box<[u64; 8]>>,
 }
 
 #[derive(Debug)]
@@ -46,6 +54,7 @@ pub struct Tree {
     nodes: Vec<Node>,
     root_path: PathBuf,
     generation: u64,
+    root_is_drive: bool,
 }
 
 fn same_name(a: &OsStr, b: &OsStr) -> bool {
@@ -63,11 +72,24 @@ impl Tree {
             files: 0,
             newest: root_newest,
             attached: true,
+            ctx: Context::None,
+            ftype: None,
+            types: Some(Box::new([0; 8])),
         };
+        let mut comps = root_path.components();
+        let root_is_drive = matches!(
+            (comps.next(), comps.next(), comps.next()),
+            (
+                Some(std::path::Component::Prefix(_)),
+                Some(std::path::Component::RootDir),
+                None
+            )
+        );
         Tree {
             nodes: vec![root],
             root_path,
             generation: 0,
+            root_is_drive,
         }
     }
 
@@ -97,12 +119,23 @@ impl Tree {
     pub fn add_children(&mut self, parent: NodeId, entries: Vec<EntryData>) -> Vec<NodeId> {
         let mut ids = Vec::with_capacity(entries.len());
         let (mut size, mut files, mut newest) = (0u64, 0u64, i64::MIN);
+        let mut types = [0u64; 8];
+        let parent_ctx = self.node(parent).ctx;
+        let at_drive_root = self.root_is_drive && parent == self.root();
         for e in entries {
             let id = NodeId(u32::try_from(self.nodes.len()).expect("tree exceeds u32::MAX nodes"));
             let node_files = u64::from(e.kind == NodeKind::File);
             size += e.size;
             files += node_files;
             newest = newest.max(e.newest);
+            let (ctx, ftype) = match e.kind {
+                NodeKind::Dir => (child_context(parent_ctx, &e.name, at_drive_root), None),
+                NodeKind::File => (parent_ctx, Some(file_type(parent_ctx, &e.name))),
+                NodeKind::Unscanned => (Context::None, None),
+            };
+            if let Some(t) = ftype {
+                types[t.index()] += e.size;
+            }
             self.nodes.push(Node {
                 name: e.name.into_boxed_os_str(),
                 parent: Some(parent),
@@ -112,24 +145,39 @@ impl Tree {
                 files: node_files,
                 newest: e.newest,
                 attached: true,
+                ctx,
+                ftype,
+                types: (e.kind == NodeKind::Dir).then(|| Box::new([0; 8])),
             });
             self.node_mut(parent).children.push(id);
             ids.push(id);
         }
         if !ids.is_empty() {
-            self.add_to_ancestors(Some(parent), size, files, newest);
+            self.add_to_ancestors(Some(parent), size, files, newest, &types);
         }
         self.generation += 1;
         ids
     }
 
-    fn add_to_ancestors(&mut self, from: Option<NodeId>, size: u64, files: u64, newest: i64) {
+    fn add_to_ancestors(
+        &mut self,
+        from: Option<NodeId>,
+        size: u64,
+        files: u64,
+        newest: i64,
+        types: &[u64; 8],
+    ) {
         let mut cur = from;
         while let Some(id) = cur {
             let n = self.node_mut(id);
             n.size += size;
             n.files += files;
             n.newest = n.newest.max(newest);
+            if let Some(t) = n.types.as_mut() {
+                for (a, b) in t.iter_mut().zip(types) {
+                    *a += b;
+                }
+            }
             cur = n.parent;
         }
     }
@@ -141,6 +189,7 @@ impl Tree {
             return;
         };
         let (size, files) = (self.node(id).size, self.node(id).files);
+        let types = self.type_bytes(id);
         let attached = self.is_attached(id);
         self.node_mut(parent).children.retain(|&c| c != id);
         if attached {
@@ -149,6 +198,11 @@ impl Tree {
                 let n = self.node_mut(a);
                 n.size -= size;
                 n.files -= files;
+                if let Some(t) = n.types.as_mut() {
+                    for (a, b) in t.iter_mut().zip(&types) {
+                        *a -= b;
+                    }
+                }
                 cur = n.parent;
             }
         }
@@ -165,14 +219,58 @@ impl Tree {
             let n = self.node(id);
             (n.size, n.files, n.newest)
         };
+        let types = self.type_bytes(id);
         let n = self.node_mut(id);
         n.parent = Some(new_parent);
         n.attached = true;
         self.node_mut(new_parent).children.push(id);
         if self.is_attached(new_parent) {
-            self.add_to_ancestors(Some(new_parent), size, files, newest);
+            self.add_to_ancestors(Some(new_parent), size, files, newest, &types);
         }
         self.generation += 1;
+    }
+
+    /// Bytes per `FileType` that `id` contributes to its ancestors.
+    fn type_bytes(&self, id: NodeId) -> [u64; 8] {
+        let n = self.node(id);
+        if let Some(t) = &n.types {
+            **t
+        } else {
+            let mut a = [0; 8];
+            if let Some(t) = n.ftype {
+                a[t.index()] = n.size;
+            }
+            a
+        }
+    }
+
+    /// Sets the context of the root. Call it before any child is added: it
+    /// only affects nodes added afterwards.
+    pub fn set_root_context(&mut self, ctx: Context) {
+        self.node_mut(NodeId(0)).ctx = ctx;
+    }
+
+    /// Content type of a `File`; `None` for any other kind.
+    pub fn file_type(&self, id: NodeId) -> Option<FileType> {
+        self.node(id).ftype
+    }
+
+    /// For a `Dir`, the heaviest type and its share (0..=1) of the typed bytes.
+    /// `None` when nothing is typed or `id` is not a `Dir`. Ties go to the
+    /// lower `FileType` index.
+    pub fn dominant_type(&self, id: NodeId) -> Option<(FileType, f32)> {
+        let t = self.node(id).types.as_ref()?;
+        let sum: u64 = t.iter().sum();
+        if sum == 0 {
+            return None;
+        }
+        let mut best = 0;
+        for i in 1..8 {
+            if t[i] > t[best] {
+                best = i;
+            }
+        }
+        Some((FileType::ALL[best], (t[best] as f64 / sum as f64) as f32))
     }
 
     pub fn path(&self, id: NodeId) -> PathBuf {
@@ -394,5 +492,51 @@ mod tests {
         let b = t.add_children(root, vec![d("$RECYCLE.BIN", 0)])[0];
         assert_eq!(t.recycle_bin(), Some(b));
         assert_eq!(t.ensure_recycle_bin(), b);
+    }
+
+    #[test]
+    fn type_aggregation() {
+        use crate::filetype::FileType;
+        let mut t = Tree::new(PathBuf::from(r"C:\"), 0);
+        let root = t.root();
+        let top = t.add_children(root, vec![d("Users", 0), d("Windows", 0)]);
+        let (users, win) = (top[0], top[1]);
+        let u = t.add_children(users, vec![f("a.mkv", 100, 0), f("b.zip", 50, 0)]);
+        let w = t.add_children(win, vec![f("c.dll", 30, 0)]);
+        let close = |x: (FileType, f32), ty, share: f32| x.0 == ty && (x.1 - share).abs() < 1e-6;
+        assert!(close(
+            t.dominant_type(users).unwrap(),
+            FileType::Media,
+            100.0 / 150.0
+        ));
+        assert!(close(
+            t.dominant_type(root).unwrap(),
+            FileType::Media,
+            100.0 / 180.0
+        ));
+        assert_eq!(t.file_type(w[0]), Some(FileType::System));
+        assert_eq!(t.file_type(users), None);
+        assert_eq!(t.dominant_type(u[0]), None);
+        t.detach(u[0]);
+        assert!(close(
+            t.dominant_type(users).unwrap(),
+            FileType::Archive,
+            1.0
+        ));
+        let bin = t.ensure_recycle_bin();
+        assert_eq!(t.dominant_type(bin), None);
+        t.reparent(u[1], bin);
+        assert!(close(t.dominant_type(bin).unwrap(), FileType::Archive, 1.0));
+        assert_eq!(t.dominant_type(users), None);
+    }
+
+    #[test]
+    fn root_context_is_inherited() {
+        use crate::filetype::{Context, FileType};
+        let mut t = Tree::new(PathBuf::from(r"D:\Lib"), 0);
+        t.set_root_context(Context::Game);
+        let root = t.root();
+        let k = t.add_children(root, vec![f("a.mp4", 10, 0)]);
+        assert_eq!(t.file_type(k[0]), Some(FileType::Game));
     }
 }

@@ -3,6 +3,7 @@ pub mod age;
 pub mod basket;
 pub mod cleanup;
 pub mod delete;
+pub mod filetype;
 pub mod layout;
 pub mod rules;
 pub mod scan;
